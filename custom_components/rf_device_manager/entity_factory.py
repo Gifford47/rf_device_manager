@@ -230,7 +230,9 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         if not slots:
             return
         matcher = get_domain_data(self.hass).rf_manager.matcher
-        self._matcher_unsub = matcher.async_register(slots, self._handle_received)
+        self._matcher_unsub = matcher.async_register(
+            slots, self._handle_received, group=code.device_id
+        )
 
     @callback
     def _async_unregister_matcher(self) -> None:

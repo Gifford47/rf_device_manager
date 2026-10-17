@@ -595,6 +595,7 @@ class _MatchEntry:
     fingerprint: str | None
     bits: str | None
     callback: MatchCallback
+    group: str | None = None
 
 
 class CodeMatcher:
@@ -619,14 +620,19 @@ class CodeMatcher:
         self,
         slots: list[tuple[str, str | None, str | None]],
         match_callback: MatchCallback,
+        group: str | None = None,
     ) -> CALLBACK_TYPE:
         """Register an entity's slots as ``(slot, fingerprint, bits)`` tuples.
+
+        ``group`` (the RF device id) ties entities whose codes come from the
+        same remote together: per signal, only the closest-matching entities
+        of a group fire (see ``_dispatch``).
 
         Returns a callback that removes exactly these registrations. The hub
         subscription starts on the first registration and stops with the last.
         """
         added = [
-            _MatchEntry(slot, fingerprint, bits, match_callback)
+            _MatchEntry(slot, fingerprint, bits, match_callback, group)
             for slot, fingerprint, bits in slots
             if fingerprint or bits
         ]
@@ -657,6 +663,13 @@ class CodeMatcher:
         single bit, so a received code lands within tolerance of several
         slots of the same entity; dispatching all of them would flip the
         state back and forth (on/off/on/off) once per repeated frame.
+
+        The same applies *across* entities of one device: a remote whose
+        buttons are learned as separate entities (e.g. stateless buttons)
+        has sibling codes only a bit or two apart, so one press would fire
+        every button within tolerance. Within a ``group`` only the entities
+        at the group's best distance fire - an exact hit wins outright,
+        while several entities sharing an identical code still all fire.
         """
         fingerprint = signal.fingerprint
         bits = signal.analysis.get("bits")
@@ -671,7 +684,16 @@ class CodeMatcher:
             if current is None or distance < current[0]:
                 best[entry.callback] = (distance, entry)
 
-        for _distance, entry in best.values():
+        group_best: dict[object, int] = {}
+        for distance, entry in best.values():
+            key = entry.group if entry.group is not None else entry.callback
+            if distance < group_best.get(key, distance + 1):
+                group_best[key] = distance
+
+        for distance, entry in best.values():
+            key = entry.group if entry.group is not None else entry.callback
+            if distance > group_best[key]:
+                continue  # a sibling code of the same device matched better
             try:
                 entry.callback(entry.slot, signal)
             except Exception:  # noqa: BLE001 - one bad handler must not break others

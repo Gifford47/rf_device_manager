@@ -146,7 +146,12 @@ polarity is the non-obvious part.
   This is essential: sibling remote buttons often differ by a single bit, so a
   received code lands within tolerance of several slots of one entity;
   dispatching all of them would flip state on/off/on/off once per repeated
-  frame. Codes learned before bit-decoding existed only match exactly until
+  frame. **The same holds across the entities of one device**: entities
+  register with `group=device_id`, and per signal only the entities at the
+  group's best distance fire (an exact hit beats near-misses on sibling
+  buttons; identical codes on several entities still all fire). Without this,
+  one press on a remote learned as separate button entities fired every
+  button within tolerance. Codes learned before bit-decoding existed only match exactly until
   re-learned. Per-slot reception is debounced in the entity
   (`RECV_DEBOUNCE_S`) since one press arrives as many repeated frames.
 - **`LearnSession`** — waits for the first signal (timeout), then collects for a
