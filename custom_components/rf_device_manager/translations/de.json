@@ -68,6 +68,7 @@
         "description": "Verwalte Einstellungen und RF-Codes dieses Geräts.",
         "menu_options": {
           "device_settings": "Geräteeinstellungen",
+          "add_buttons": "Tasten hinzufügen (mehrere auf einmal anlernen)",
           "add_code": "Neuen RF-Code hinzufügen",
           "manage_codes": "RF-Codes verwalten"
         }
@@ -93,6 +94,18 @@
           "entity_type": "Entitätstyp",
           "icon": "Icon",
           "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        }
+      },
+      "add_buttons": {
+        "title": "Tasten hinzufügen",
+        "description": "Ein Tastenname pro Zeile (oder kommagetrennt). Jeder wird zu einer zustandslosen Tasten-Entität auf **{device_name}**.\n\nDanach wartet der Assistent nacheinander auf jede Taste: auf der echten Fernbedienung drücken, Ergebnis prüfen, speichern – dann lauscht er auf die nächste. Tasten werden sofort gespeichert.",
+        "data": {
+          "button_names": "Tastennamen",
+          "icon": "Symbol (alle Tasten)",
+          "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        },
+        "data_description": {
+          "button_names": "Zum Beispiel:\nAus\nStufe 1\nStufe 2"
         }
       },
       "type_settings": {
@@ -228,6 +241,10 @@
       "code_delete": {
         "title": "RF-Code löschen",
         "description": "„{code_name}“ ({entity_type}) löschen? Die Entität und alle angelernten Befehle werden dauerhaft entfernt."
+      },
+      "bulk_done": {
+        "title": "Tasten hinzugefügt",
+        "description": "{saved_count} von {total} Tasten hinzugefügt: {saved}\n\nÜbersprungen: {skipped}"
       }
     },
     "progress": {
@@ -248,7 +265,9 @@
       "no_transmitters": "Keine RF-Sender gefunden.",
       "transmitter_not_found": "Diese Sender-Entität existiert nicht (mehr).",
       "unsupported_frequency": "Der gewählte Sender unterstützt diese Frequenz nicht.",
-      "frequency_required": "Bitte eine eigene Frequenz in Hz eingeben."
+      "frequency_required": "Bitte eine eigene Frequenz in Hz eingeben.",
+      "invalid_button_names": "Bitte mindestens einen Tastennamen eingeben.",
+      "duplicate_button_names": "Tastennamen müssen auf diesem Gerät eindeutig sein (inkl. vorhandener Codes)."
     },
     "abort": {
       "no_codes": "Dieses Gerät hat noch keine RF-Codes."

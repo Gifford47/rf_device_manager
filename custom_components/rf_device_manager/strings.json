@@ -68,6 +68,7 @@
         "description": "Manage settings and RF codes of this device.",
         "menu_options": {
           "device_settings": "Device settings",
+          "add_buttons": "Add buttons (learn several at once)",
           "add_code": "Add new RF code",
           "manage_codes": "Manage RF codes"
         }
@@ -93,6 +94,18 @@
           "entity_type": "Entity type",
           "icon": "Icon",
           "repeat": "Repeats (overrides device default)"
+        }
+      },
+      "add_buttons": {
+        "title": "Add buttons",
+        "description": "One button name per line (or comma separated). Each becomes a stateless button entity on **{device_name}**.\n\nAfter you submit, the wizard listens for each button in turn: press it on the real remote, check the result, save, and the next one starts listening. Buttons are saved as you go.",
+        "data": {
+          "button_names": "Button names",
+          "icon": "Icon (all buttons)",
+          "repeat": "Repeats (overrides device default)"
+        },
+        "data_description": {
+          "button_names": "For example:\nOff\nSpeed 1\nSpeed 2"
         }
       },
       "type_settings": {
@@ -228,6 +241,10 @@
       "code_delete": {
         "title": "Delete RF code",
         "description": "Delete “{code_name}” ({entity_type})? The entity and all learned commands will be removed permanently."
+      },
+      "bulk_done": {
+        "title": "Buttons added",
+        "description": "Added {saved_count} of {total} buttons: {saved}\n\nSkipped: {skipped}"
       }
     },
     "progress": {
@@ -248,7 +265,9 @@
       "no_transmitters": "No RF transmitters found.",
       "transmitter_not_found": "This transmitter entity does not exist (anymore).",
       "unsupported_frequency": "The selected transmitter does not support this frequency.",
-      "frequency_required": "Please enter a custom frequency in Hz."
+      "frequency_required": "Please enter a custom frequency in Hz.",
+      "invalid_button_names": "Enter at least one button name.",
+      "duplicate_button_names": "Button names must be unique on this device (including existing codes)."
     },
     "abort": {
       "no_codes": "This device has no RF codes yet."

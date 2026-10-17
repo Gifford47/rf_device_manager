@@ -205,6 +205,12 @@ remote_receiver:
    **test**, save — or enter the code manually.
 6. The entity appears immediately — no restart, no reload.
 
+**Many buttons at once:** for a multi-button remote, use *Add buttons*
+instead. Paste the button names (one per line, or comma separated), then
+press each button on the remote as the wizard asks for it. Every name becomes
+a stateless button entity, saved as soon as it is learned; a warning appears
+if a press repeats a code that is already stored (wrong button pressed?).
+
 Codes can be edited, re-learned per command, tested, disabled or deleted at
 any time via *Manage RF codes*. Device base settings are also available via
 **Reconfigure**.

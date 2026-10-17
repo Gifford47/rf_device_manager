@@ -195,6 +195,12 @@ polarity is the non-obvious part.
     `slot_confirm` (menu: **Save / Test / Discard** buttons) → next slot →
     `save_code`. Manual entry (`slot_manual`) supports raw / Tasmota B0 /
     tri-state / binary / Pronto.
+  - **Bulk buttons** (`add_buttons`): a list of names becomes a queue of
+    `button` codes; each goes straight to `slot_learn` (skip is always
+    offered), and `_async_advance_slot` saves it immediately and pops the next
+    (`_bulk_active`), ending in `bulk_done`. `slot_confirm` warns when the
+    pending command's fingerprint/bits equal any stored command of the device
+    (`_duplicate_warning`, all wizards).
   - **No-receiver guard:** `slot_learn` refreshes `hub.async_discover()` and,
     if no receiver is found, routes to `slot_no_receiver` (warn + retry /
     manual / skip) instead of waiting for a signal that can never arrive.

@@ -93,6 +93,9 @@ CONF_PULSE_LENGTH = "pulse_length"
 CONF_RC_PROTOCOL = "rc_protocol"
 CONF_B0_CODE = "b0_code"
 
+# Bulk button creation
+CONF_BUTTON_NAMES = "button_names"
+
 # Type-specific settings keys
 CONF_HAS_OFF = "has_off"
 CONF_HAS_STOP = "has_stop"

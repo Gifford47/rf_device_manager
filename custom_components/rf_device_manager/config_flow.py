@@ -9,6 +9,8 @@ duplicate); the options flow provides the full management UI:
   selection, live testing and a final confirmation
 * code management: edit, re-learn single commands, test, enable/disable,
   delete
+* bulk button creation: paste a list of button names and learn them back to
+  back - one stateless button entity per name
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from .const import (
     CONF_B0_CODE,
     CONF_BINARY_CODE,
     CONF_BRIGHTNESS_STEPS,
+    CONF_BUTTON_NAMES,
     CONF_DEFAULT_REPEAT,
     CONF_DESCRIPTION,
     CONF_DEVICE_CLASS,
@@ -83,6 +86,7 @@ from .const import (
     DEFAULT_REPEAT,
     DOMAIN,
     ENTITY_TYPE_BINARY_SENSOR,
+    ENTITY_TYPE_BUTTON,
     ENTITY_TYPE_COVER,
     ENTITY_TYPE_FAN,
     ENTITY_TYPE_LIGHT,
@@ -232,6 +236,18 @@ def _validate_device_input(
     if not options[CONF_NAME]:
         errors[CONF_NAME] = "name_required"
     return options, errors
+
+
+def _parse_button_names(raw: str) -> list[str]:
+    """Split the bulk-add text into button names.
+
+    One name per line; a single line is split on commas instead, so both
+    "Off, Speed 1, Speed 2" and a pasted list work.
+    """
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(lines) == 1 and "," in lines[0]:
+        return parse_csv(lines[0])
+    return lines
 
 
 def _suggested_from_options(options: dict[str, Any]) -> dict[str, Any]:
@@ -405,6 +421,16 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         self._learn_task: asyncio.Task | None = None
         self._selected_code_id: str | None = None
         self._test_note = ""
+        # Bulk button creation state.
+        self._bulk_queue: list[RFCode] = []
+        self._bulk_total = 0
+        self._bulk_saved: list[str] = []
+        self._bulk_skipped: list[str] = []
+
+    @property
+    def _bulk_active(self) -> bool:
+        """Return whether the bulk button wizard is running."""
+        return self._bulk_total > 0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -437,6 +463,14 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         assert self._code is not None
         hub = get_domain_data(self.hass).rf_manager.hub
         receivers = hub.async_receiver_names()
+        if self._bulk_active:
+            done = self._bulk_total - len(self._bulk_queue)
+            return {
+                "code_name": self._device().name,
+                "slot": self._code.name,
+                "position": f"{done}/{self._bulk_total}",
+                "receivers": ", ".join(receivers) if receivers else "—",
+            }
         return {
             "code_name": self._code.name,
             "slot": slot_label(self._current_slot_key(), self._language),
@@ -475,7 +509,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         # Warm the receiver cache so the learn wizard can show which
         # ESPHome RF receivers are available.
         await domain_data.rf_manager.hub.async_discover()
-        menu = ["device_settings", "add_code"]
+        menu = ["device_settings", "add_buttons", "add_code"]
         if self._codes():
             menu.append("manage_codes")
         return self.async_show_menu(step_id="init", menu_options=menu)
@@ -569,6 +603,110 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             schema = self.add_suggested_values_to_schema(schema, user_input)
         return self.async_show_form(
             step_id="add_code", data_schema=schema, errors=errors
+        )
+
+    # ------------------------------------------------------------------
+    # Bulk button wizard
+    # ------------------------------------------------------------------
+
+    async def async_step_add_buttons(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Create several stateless button entities in one go.
+
+        Each name becomes one ``button`` entity. The wizard then goes
+        straight into learning for every button in turn: press the remote
+        button, confirm, and the next one starts listening.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            names = _parse_button_names(user_input.get(CONF_BUTTON_NAMES, ""))
+            existing = {code.name.casefold() for code in self._codes().values()}
+            folded = [name.casefold() for name in names]
+            if not names:
+                errors[CONF_BUTTON_NAMES] = "invalid_button_names"
+            elif len(set(folded)) != len(folded) or existing.intersection(folded):
+                errors[CONF_BUTTON_NAMES] = "duplicate_button_names"
+            else:
+                device = self._device()
+                repeat_raw = user_input.get(CONF_REPEAT)
+                repeat = (
+                    int(repeat_raw)
+                    if repeat_raw is not None
+                    else device.default_repeat
+                )
+                icon = user_input.get(CONF_ICON)
+                self._bulk_queue = []
+                for name in names:
+                    settings: dict[str, Any] = {CONF_REPEAT: repeat}
+                    if icon:
+                        settings[CONF_ICON] = icon
+                    self._bulk_queue.append(
+                        RFCode.create(
+                            device_id=device.id,
+                            name=name,
+                            entity_type=ENTITY_TYPE_BUTTON,
+                            settings=settings,
+                        )
+                    )
+                self._bulk_total = len(names)
+                self._bulk_saved = []
+                self._bulk_skipped = []
+                return await self._async_next_bulk_button()
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_BUTTON_NAMES): TextSelector(
+                    TextSelectorConfig(multiline=True)
+                ),
+                vol.Optional(CONF_ICON): IconSelector(),
+                vol.Optional(CONF_REPEAT): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0, max=20, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+            }
+        )
+        if user_input is not None:
+            schema = self.add_suggested_values_to_schema(schema, user_input)
+        return self.async_show_form(
+            step_id="add_buttons",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"device_name": self._device().name},
+        )
+
+    async def _async_next_bulk_button(self) -> ConfigFlowResult:
+        """Start learning the next queued button, or show the summary."""
+        if not self._bulk_queue:
+            return await self.async_step_bulk_done()
+        self._code = self._bulk_queue.pop(0)
+        self._editing_existing = False
+        self._slots = build_slots(ENTITY_TYPE_BUTTON, {})
+        self._slot_index = 0
+        self._pending = None
+        self._signals = []
+        # Straight into listening - no "learn or enter manually?" menu per
+        # button. A timeout still offers manual entry and skip.
+        return await self.async_step_slot_learn()
+
+    async def async_step_bulk_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Summarize the bulk run; entities already exist at this point."""
+        if user_input is not None:
+            self._bulk_total = 0
+            self._bulk_queue = []
+            return self._finish()
+        return self.async_show_form(
+            step_id="bulk_done",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "saved": ", ".join(self._bulk_saved) or "—",
+                "skipped": ", ".join(self._bulk_skipped) or "—",
+                "saved_count": str(len(self._bulk_saved)),
+                "total": str(self._bulk_total),
+            },
         )
 
     async def async_step_type_settings(
@@ -735,7 +873,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         await get_domain_data(self.hass).rf_manager.hub.async_discover()
         spec = self._slots[self._slot_index]
         menu = ["slot_learn", "slot_manual"]
-        if not spec.required or spec.key in self._code.commands:
+        if not spec.required or spec.key in self._code.commands or self._bulk_active:
             menu.append("slot_skip")
         return self.async_show_menu(
             step_id="slot_menu",
@@ -788,7 +926,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         assert self._code is not None
         spec = self._slots[self._slot_index]
         menu = ["slot_learn", "slot_manual"]
-        if not spec.required:
+        if not spec.required or self._bulk_active:
             menu.append("slot_skip")
         return self.async_show_menu(
             step_id="slot_learn_failed",
@@ -808,7 +946,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         assert self._code is not None
         spec = self._slots[self._slot_index]
         menu = ["slot_learn", "slot_manual"]
-        if not spec.required or spec.key in self._code.commands:
+        if not spec.required or spec.key in self._code.commands or self._bulk_active:
             menu.append("slot_skip")
         return self.async_show_menu(
             step_id="slot_no_receiver",
@@ -1053,12 +1191,13 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             "tristate": pending.extra.get("tristate")
             or (pending.code if pending.protocol == PROTOCOL_TRISTATE else None),
         }
+        notes = [note for note in (self._duplicate_warning(pending), self._test_note) if note]
         placeholders = {
             **self._slot_placeholders(),
             "summary": rf_analysis.signal_details(pending_analysis, self._language),
             "timings_preview": rf_analysis.preview_timings(pending.data),
             "source": pending.source,
-            "test_note": self._test_note,
+            "test_note": "\n\n".join(notes),
         }
         self._test_note = ""
         return self.async_show_menu(
@@ -1066,6 +1205,41 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             menu_options=["slot_accept", "slot_test", "slot_retry"],
             description_placeholders=placeholders,
         )
+
+    def _duplicate_warning(self, pending: RFCommandData) -> str:
+        """Warn when the pending command equals one already stored.
+
+        Catches the classic bulk-learning slip of pressing the same remote
+        button twice (or the previous one again).
+        """
+        assert self._code is not None
+        bits = pending.extra.get("bits")
+        if not pending.fingerprint and not bits:
+            return ""
+        clashes: list[str] = []
+        codes = dict(self._codes())
+        codes[self._code.id] = self._code
+        for code in codes.values():
+            for slot, command in code.commands.items():
+                if code.id == self._code.id and slot == self._current_slot_key():
+                    continue  # the command being replaced
+                same = (
+                    pending.fingerprint is not None
+                    and command.fingerprint == pending.fingerprint
+                ) or (bits is not None and command.extra.get("bits") == bits)
+                if same:
+                    label = (
+                        code.name
+                        if len(code.commands) == 1
+                        else f"{code.name} / {slot_label(slot, self._language)}"
+                    )
+                    clashes.append(label)
+        if not clashes:
+            return ""
+        names = ", ".join(f"“{name}”" for name in clashes)
+        if self._language.lower().startswith("de"):
+            return f"⚠️ Gleicher Code wie {names} – falsche Taste gedrückt?"
+        return f"⚠️ Same code as {names} – wrong button pressed?"
 
     async def async_step_slot_test(
         self, user_input: dict[str, Any] | None = None
@@ -1119,6 +1293,16 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             assert self._code is not None
             get_domain_data(self.hass).device_manager.async_update_code(self._code)
             return self._finish()
+        if self._bulk_active:
+            assert self._code is not None
+            # Save each button as soon as it is learned, so closing the
+            # dialog half way keeps everything learned so far.
+            if self._code.commands:
+                get_domain_data(self.hass).device_manager.async_add_code(self._code)
+                self._bulk_saved.append(self._code.name)
+            else:
+                self._bulk_skipped.append(self._code.name)
+            return await self._async_next_bulk_button()
         return await self.async_step_save_code()
 
     async def async_step_save_code(
