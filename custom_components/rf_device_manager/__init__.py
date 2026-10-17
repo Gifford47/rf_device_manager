@@ -144,11 +144,15 @@ async def async_migrate_entry(
     if entry.version > 1:
         # Downgrade from a future version is not supported.
         return False
-    # Version 1.x is current; future migrations transform data here.
-    _LOGGER.debug(
-        "Config entry %s at version %s.%s - no migration needed",
-        entry.entry_id,
-        entry.version,
-        entry.minor_version,
-    )
+    if entry.version == 1 and entry.minor_version < 2:
+        # Before 1.2, a default repeat of 0 was sent as DEFAULT_REPEAT (7)
+        # extra repeats; since 1.2, 0 sends exactly once. Keep existing
+        # devices transmitting as before.
+        options = dict(entry.options)
+        if int(options.get(CONF_DEFAULT_REPEAT, 0) or 0) <= 0:
+            options[CONF_DEFAULT_REPEAT] = DEFAULT_REPEAT
+        hass.config_entries.async_update_entry(
+            entry, options=options, minor_version=2
+        )
+        _LOGGER.debug("Migrated config entry %s to 1.2", entry.entry_id)
     return True

@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    DEFAULT_REPEAT,
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
     STORAGE_SAVE_DELAY,
@@ -36,7 +37,7 @@ class _RFStore(Store[dict[str, Any]]):
     ) -> dict[str, Any]:
         """Migrate stored data to the current schema version.
 
-        Version 1.1 is the initial schema; future versions transform the
+        Version 1.1 is the initial schema; each later version transforms the
         data here step by step.
         """
         data = old_data
@@ -46,9 +47,39 @@ class _RFStore(Store[dict[str, Any]]):
             old_major_version,
             old_minor_version,
         )
-        # No migrations needed yet - placeholder chain for future versions:
-        # if old_major_version == 1 and old_minor_version < 2: ...
+        if old_major_version == 1 and old_minor_version < 2:
+            data = _migrate_repeat_zero(data)
         return data
+
+
+def _legacy_repeat(value: Any) -> Any:
+    """Map a pre-1.2 repeat value to its current meaning.
+
+    Before 1.2, a repeat of 0 was silently sent as DEFAULT_REPEAT (7) extra
+    repeats. Since 1.2, 0 sends exactly once, so stored zeros become 7 to
+    keep every existing device and code transmitting exactly as before.
+    """
+    try:
+        return DEFAULT_REPEAT if int(value) <= 0 else value
+    except (TypeError, ValueError):
+        return value
+
+
+def _migrate_repeat_zero(data: dict[str, Any]) -> dict[str, Any]:
+    """Storage 1.1 -> 1.2: rewrite legacy repeat=0 values (see above)."""
+    for device in (data.get("devices") or {}).values():
+        settings = device.get("settings") or {}
+        if "default_repeat" in settings:
+            settings["default_repeat"] = _legacy_repeat(settings["default_repeat"])
+    for code in (data.get("codes") or {}).values():
+        settings = code.get("settings") or {}
+        if "repeat" in settings:
+            settings["repeat"] = _legacy_repeat(settings["repeat"])
+        commands = (code.get("rf_data") or {}).get("commands") or {}
+        for command in commands.values():
+            if "repeat" in command:
+                command["repeat"] = _legacy_repeat(command["repeat"])
+    return data
 
 
 class RFDeviceStore:

@@ -25,7 +25,7 @@
           "transmitter": "The radio_frequency entity (e.g. an ESPHome IR/RF proxy) used to send codes for this device.",
           "frequency_preset": "Carrier frequency of the device's remote control.",
           "frequency_custom": "Only used when 'Custom frequency…' is selected above.",
-          "default_repeat": "How many extra times commands are repeated when sending."
+          "default_repeat": "How many extra times commands are repeated when sending. 0 sends once; 7 (default) matches a short button press."
         }
       },
       "duplicate_device": {
@@ -343,7 +343,7 @@
         },
         "repeat": {
           "name": "Repeats",
-          "description": "Extra repetitions; overrides the stored value."
+          "description": "Extra repetitions (0 = send once); overrides the stored value."
         }
       }
     },
@@ -389,7 +389,7 @@
         },
         "repeat": {
           "name": "Repeats",
-          "description": "Extra repetitions of the transmission."
+          "description": "Extra repetitions of the transmission (0 = send once)."
         }
       }
     },

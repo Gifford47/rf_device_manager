@@ -15,7 +15,7 @@ MODEL = "Virtual RF device"
 
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 1
+STORAGE_MINOR_VERSION = 2
 STORAGE_SAVE_DELAY = 1.0  # seconds, debounce for Store.async_delay_save
 
 # ---------------------------------------------------------------------------
@@ -159,13 +159,12 @@ LEARN_COLLECT_WINDOW = 4.0  # seconds to keep collecting after the first signal
 LEARN_MAX_SIGNALS = 8  # distinct signals kept per learning session
 MIN_SIGNAL_PULSES = 8  # ignore captures shorter than this many edges
 
-DEFAULT_REPEAT = 0  # extra repeats when re-sending a stored command
-
-# Effective repeats used when a command's repeat is 0/unset: real remotes
-# transmit their frame continuously while a button is held, and typical OOK
-# receivers only accept a code after several identical frames. 7 extra
-# repeats = 8 frames on air (~0.5-1 s), matching a short button press.
-DEFAULT_SEND_REPEAT = 7
+# Extra repeats when sending a stored command; 0 sends exactly once.
+# Real remotes transmit their frame continuously while a button is held, and
+# typical OOK receivers only accept a code after several identical frames.
+# 7 extra repeats = 8 frames on air (~0.5-1 s), matching a short button press.
+# (Before storage 1.2 / entry 1.2, 0 meant "use 7"; see the migrations.)
+DEFAULT_REPEAT = 7
 
 # Interval used by the receiver hub to (re-)attach to ESPHome API clients,
 # picking up reconnects and newly added nodes.

@@ -126,9 +126,12 @@ polarity is the non-obvious part.
   `async_send()`, `new_learn_session()`.
 - **`async_send()`** — normalizes timings, checks the transmitter isn't
   `unavailable` (note: `unknown` is a valid "ready" state — a transmitter that
-  has never sent reports `unknown`), builds `_StoredCommand`, applies
-  `DEFAULT_SEND_REPEAT` (7 extra → 8 frames on air, matching a short button
-  hold) when the command's repeat is 0/unset, then calls the core helper.
+  has never sent reports `unknown`), builds `_StoredCommand` with the
+  command's `repeat` (extra repeats; **0 = send exactly once**; unset/negative
+  → `DEFAULT_REPEAT` = 7 → 8 frames on air, matching a short button hold),
+  then calls the core helper. Before storage/entry version 1.2, 0 meant "use
+  7"; the migrations in `storage.py` and `async_migrate_entry` rewrite stored
+  zeros to 7 so existing codes keep transmitting the same way.
 - **`ReceiverHub`** — multiplexes captures from all sources to subscribers.
   Sources: ESPHome nodes (native API `subscribe_infrared_rf_receive`, discovered
   via `list_entities_services()` because core does not cache RF *receiver*

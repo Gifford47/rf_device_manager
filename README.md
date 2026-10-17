@@ -238,8 +238,9 @@ signals while learning and to match incoming signals for (binary) sensors.
 normalized: sign convention, glitch removal, idle trim — no rotation,
 quantization or "cleaning") and repeats them, by default 8 times on air
 like briefly holding the remote button, since OOK receivers only accept a
-code after several identical frames. The repeat count can be overridden per
-code, per device or per service call.
+code after several identical frames. The repeat count (extra repeats, default
+7) can be overridden per code, per device or per service call; `0` sends the
+code exactly once.
 
 > **Limitation:** rolling-code systems (KeeLoq, Somfy RTS, …) send a
 > different code on every press — record/replay cannot work for those by

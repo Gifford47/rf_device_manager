@@ -258,7 +258,7 @@ class RFDeviceManagerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create a new managed RF device (fresh or duplicated)."""
 
     VERSION = 1
-    MINOR_VERSION = 1
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Initialize flow state."""

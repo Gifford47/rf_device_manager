@@ -61,13 +61,13 @@ HA-UI), Geräte-Identität in `entry.data`, veränderliche Einstellungen in
 ```jsonc
 // Gerät (entry.data + entry.options, gespiegelt im Store)
 { "id": "uuid", "name": "Garagentor", "transmitter": "radio_frequency.esp_garage_rf",
-  "settings": { "frequency": 433920000, "default_repeat": 0, "description": "..." } }
+  "settings": { "frequency": 433920000, "default_repeat": 7, "description": "..." } }
 
 // Code (Store) — 1 Code == 1 Entity, mit 1..n Befehls-Slots
 { "id": "uuid", "device_id": "uuid", "name": "Tor", "entity_type": "cover",
   "rf_data": { "commands": {
       "open":  { "protocol": "raw", "frequency": 433920000, "pulse_length": 350,
-                 "data": [350, -1050, ...], "repeat": 0, "code": null,
+                 "data": [350, -1050, ...], "repeat": 7, "code": null,
                  "fingerprint": "24:ab12cd34ef56", "source": "learned:esphome" },
       "close": { ... }, "stop": { ... } } },
   "settings": { "device_class": "garage", "icon": null, "enabled": true } }

@@ -25,7 +25,7 @@
           "transmitter": "Die radio_frequency-Entität (z. B. ein ESPHome IR/RF-Proxy), über die Codes dieses Geräts gesendet werden.",
           "frequency_preset": "Trägerfrequenz der Fernbedienung des Geräts.",
           "frequency_custom": "Wird nur verwendet, wenn oben 'Eigene Frequenz…' gewählt ist.",
-          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden."
+          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden. 0 sendet einmal; 7 (Standard) entspricht einem kurzen Tastendruck."
         }
       },
       "duplicate_device": {
@@ -343,7 +343,7 @@
         },
         "repeat": {
           "name": "Wiederholungen",
-          "description": "Zusätzliche Wiederholungen; überschreibt den gespeicherten Wert."
+          "description": "Zusätzliche Wiederholungen (0 = einmal senden); überschreibt den gespeicherten Wert."
         }
       }
     },
@@ -389,7 +389,7 @@
         },
         "repeat": {
           "name": "Wiederholungen",
-          "description": "Zusätzliche Wiederholungen der Übertragung."
+          "description": "Zusätzliche Wiederholungen der Übertragung (0 = einmal senden)."
         }
       }
     },
