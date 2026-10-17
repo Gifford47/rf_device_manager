@@ -200,6 +200,13 @@ class ReceiverHub:
         self._bus_unsub: CALLBACK_TYPE | None = None
         self._timer_unsub: CALLBACK_TYPE | None = None
         self._cached_names: list[str] = []
+        # Per-ESPHome-entry receiver cache, valid for one API connection.
+        # ``entry_id -> (runtime_data, node_name, receivers)``;
+        # nodes without RF receivers are cached too (empty dict) so they are
+        # not asked for their entity list again until they reconnect.
+        self._receiver_cache: dict[
+            str, tuple[Any, str, dict[tuple[int, int], _ReceiverMeta]]
+        ] = {}
 
     @callback
     def async_subscribe(self, signal_callback: SignalCallback) -> CALLBACK_TYPE:
@@ -232,12 +239,19 @@ class ReceiverHub:
         receivers are usually only visible through a direct entity listing
         from the device (``list_entities_services``).
 
-        Returns ``{entry_id: (node_name, receivers)}`` and refreshes the
-        name cache used for UI display.
+        Results are cached per node for the lifetime of its API connection:
+        each node is asked once per connection, and the cache entry is
+        dropped when the node disconnects or its config entry is reloaded.
+        Without the cache, the maintenance timer re-listed the entities of
+        every ESPHome node every 30 seconds.
+
+        Returns ``{entry_id: (node_name, receivers)}`` (nodes with receivers
+        only) and refreshes the name cache used for UI display.
         """
         discovered: dict[str, tuple[str, dict[tuple[int, int], _ReceiverMeta]]] = {}
         names: list[str] = []
         if HAS_AIOESPHOMEAPI:
+            live_ids: set[str] = set()
             for entry in self._hass.config_entries.async_entries(ESPHOME_DOMAIN):
                 if entry.state is not ConfigEntryState.LOADED:
                     continue
@@ -249,20 +263,69 @@ class ReceiverHub:
                 client = getattr(runtime_data, "client", None)
                 if client is None:
                     continue
-                receivers = self._receivers_from_info(runtime_data)
-                if not receivers:
-                    receivers = await self._receivers_from_device(client)
+                live_ids.add(entry.entry_id)
+                cached = self._receiver_cache.get(entry.entry_id)
+                if cached is not None and cached[0] is runtime_data:
+                    _runtime, node_name, receivers = cached
+                else:
+                    receivers = self._receivers_from_info(runtime_data)
+                    if not receivers:
+                        listed = await self._receivers_from_device(client)
+                        if listed is None:
+                            continue  # query failed; retry on the next pass
+                        receivers = listed
+                    device_info = getattr(runtime_data, "device_info", None)
+                    node_name = getattr(device_info, "name", None) or entry.title
+                    self._receiver_cache[entry.entry_id] = (
+                        runtime_data,
+                        node_name,
+                        receivers,
+                    )
+                    self._async_watch_disconnect(entry.entry_id, runtime_data)
                 if not receivers:
                     continue
-                device_info = getattr(runtime_data, "device_info", None)
-                node_name = getattr(device_info, "name", None) or entry.title
                 discovered[entry.entry_id] = (node_name, receivers)
                 names.extend(
                     f"{node_name}: {meta.name}" if meta.name else node_name
                     for meta in receivers.values()
                 )
+            for entry_id in set(self._receiver_cache) - live_ids:
+                self._async_forget_node(entry_id)
         self._cached_names = sorted(names)
         return discovered
+
+    @callback
+    def _async_watch_disconnect(self, entry_id: str, runtime_data: Any) -> None:
+        """Forget a node's receivers and subscription when it disconnects.
+
+        ESPHome clears ``disconnect_callbacks`` after every disconnect, so
+        this covers exactly one connection - the lifetime of both the cache
+        entry and the receive subscription. Relying on the 30 s maintenance
+        pass alone misses a node that disconnects and reconnects within that
+        window: it keeps a dead subscription and stops delivering captures.
+        """
+        callbacks = getattr(runtime_data, "disconnect_callbacks", None)
+        if not isinstance(callbacks, set):
+            return  # other core versions: the availability checks still apply
+
+        @callback
+        def _on_disconnect() -> None:
+            cached = self._receiver_cache.get(entry_id)
+            if cached is not None and cached[0] is runtime_data:
+                # The next maintenance pass re-attaches once it is back.
+                self._async_forget_node(entry_id)
+
+        callbacks.add(_on_disconnect)
+
+    @callback
+    def _async_forget_node(self, entry_id: str) -> None:
+        """Drop the cached receivers and receive subscription of a node."""
+        self._receiver_cache.pop(entry_id, None)
+        if (unsub := self._esphome_unsubs.pop(entry_id, None)) is not None:
+            try:
+                unsub()
+            except Exception:  # noqa: BLE001 - client may already be gone
+                _LOGGER.debug("Error detaching ESPHome subscription", exc_info=True)
 
     @staticmethod
     def _build_receiver_metas(infos: Any) -> dict[tuple[int, int], _ReceiverMeta]:
@@ -296,13 +359,16 @@ class ReceiverHub:
 
     async def _receivers_from_device(
         self, client: Any
-    ) -> dict[tuple[int, int], _ReceiverMeta]:
-        """Ask the ESPHome node itself for its RF receiver entities."""
+    ) -> dict[tuple[int, int], _ReceiverMeta] | None:
+        """Ask the ESPHome node itself for its RF receiver entities.
+
+        Returns ``None`` (not cached) when the query fails.
+        """
         try:
             entities, _services = await client.list_entities_services()
         except Exception:  # noqa: BLE001 - connection may drop mid-call
             _LOGGER.debug("Could not list entities of ESPHome node", exc_info=True)
-            return {}
+            return None
         return self._build_receiver_metas(
             info for info in entities if isinstance(info, RadioFrequencyInfo)
         )
@@ -340,18 +406,18 @@ class ReceiverHub:
 
     @callback
     def _async_maintain(self, _now: Any = None) -> None:
-        """Drop dead ESPHome subscriptions and attach new/reconnected nodes."""
+        """Drop dead ESPHome subscriptions and attach new/reconnected nodes.
+
+        Cheap thanks to the receiver cache: known nodes are not queried
+        again, so this only talks to a node that is new or has reconnected.
+        """
         stale = [
             entry_id
-            for entry_id in self._esphome_unsubs
+            for entry_id in set(self._esphome_unsubs) | set(self._receiver_cache)
             if not self._is_entry_available(entry_id)
         ]
         for entry_id in stale:
-            unsub = self._esphome_unsubs.pop(entry_id)
-            try:
-                unsub()
-            except Exception:  # noqa: BLE001
-                _LOGGER.debug("Error detaching stale subscription", exc_info=True)
+            self._async_forget_node(entry_id)
         self._hass.async_create_task(self._async_attach_esphome())
 
     def _is_entry_available(self, entry_id: str) -> bool:
