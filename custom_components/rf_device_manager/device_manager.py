@@ -7,8 +7,9 @@ services mutate devices/codes exclusively through this manager.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -30,6 +31,7 @@ from .rf_manager import RFManager
 from .storage import RFDeviceStore
 
 _LOGGER = logging.getLogger(__name__)
+_DOMAIN_DATA_INIT_LOCK = f"{DOMAIN}_init_lock"
 
 
 @dataclass(slots=True)
@@ -54,17 +56,27 @@ async def async_get_or_create_domain_data(hass: HomeAssistant) -> RFDomainData:
     The config flow may run before any entry has been set up, so both the
     flow and ``async_setup_entry`` bootstrap through this helper.
     """
-    if DOMAIN in hass.data:
-        return get_domain_data(hass)
-    store = RFDeviceStore(hass)
-    await store.async_load()
-    data = RFDomainData(
-        store=store,
-        rf_manager=RFManager(hass),
-        device_manager=RFDeviceManager(hass, store),
-    )
-    hass.data[DOMAIN] = data
-    return data
+    # Create the per-Home-Assistant lock without yielding. Concurrent callers
+    # on the event loop therefore all obtain the same lock before any of them
+    # can begin loading the store.
+    init_lock = hass.data.get(_DOMAIN_DATA_INIT_LOCK)
+    if init_lock is None:
+        init_lock = hass.data[_DOMAIN_DATA_INIT_LOCK] = asyncio.Lock()
+
+    async with init_lock:
+        # Another caller may have completed initialization while we waited.
+        if DOMAIN in hass.data:
+            return get_domain_data(hass)
+
+        store = RFDeviceStore(hass)
+        await store.async_load()
+        data = RFDomainData(
+            store=store,
+            rf_manager=RFManager(hass),
+            device_manager=RFDeviceManager(hass, store),
+        )
+        hass.data[DOMAIN] = data
+        return data
 
 
 class RFDeviceManager:
