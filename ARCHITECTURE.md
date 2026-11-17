@@ -97,7 +97,7 @@ custom_components/rf_device_manager/
 ├─ storage.py             # RFDeviceStore (Store v1, delay-save, CRUD, Migration)
 ├─ rf_manager.py          # RFManager (Senden via radio_frequency-Helper, Transmitter-
 │                         #   Discovery), ReceiverHub (ESPHome-Subscribe + Bus-Fallback,
-│                         #   Re-Subscribe-Wartung), CodeMatcher (fingerprint→Entity-Index
+│                         #   Connection-Lifecycle-Callbacks + Reconnect-Scan), CodeMatcher
 │                         #   für Empfang externer Codes), LearnSession (Cluster+Ranking)
 ├─ device_manager.py      # CRUD Geräte/Codes, Registry-Sync, Duplizieren, Events
 ├─ coordinator.py         # RFDeviceCoordinator (DataUpdateCoordinator, push-basiert)

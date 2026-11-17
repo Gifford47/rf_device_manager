@@ -167,8 +167,9 @@ DEFAULT_REPEAT = 0  # extra repeats when re-sending a stored command
 # repeats = 8 frames on air (~0.5-1 s), matching a short button press.
 DEFAULT_SEND_REPEAT = 7
 
-# Interval used by the receiver hub to (re-)attach to ESPHome API clients,
-# picking up reconnects and newly added nodes.
+# Interval used to notice ESPHome entries loaded while the receiver hub is
+# active and to retry failed discovery/subscription attempts. Connection
+# reconnects are handled immediately through ESPHome runtime-data callbacks.
 RECEIVER_MAINTENANCE_INTERVAL = 30  # seconds
 
 # ---------------------------------------------------------------------------
