@@ -66,16 +66,22 @@ HA-UI), Geräte-Identität in `entry.data`, veränderliche Einstellungen in
 // Code (Store) — 1 Code == 1 Entity, mit 1..n Befehls-Slots
 { "id": "uuid", "device_id": "uuid", "name": "Tor", "entity_type": "cover",
   "rf_data": { "commands": {
-      "open":  { "protocol": "raw", "frequency": 433920000, "pulse_length": 350,
-                 "data": [350, -1050, ...], "repeat": 0, "code": null,
-                 "fingerprint": "24:ab12cd34ef56", "source": "learned:esphome" },
-      "close": { ... }, "stop": { ... } } },
+      "open":  [{ "protocol": "raw", "frequency": 433920000, "pulse_length": 350,
+                  "data": [350, -1050, ...], "repeat": 0, "code": null,
+                  "fingerprint": "24:ab12cd34ef56", "source": "learned:esphome" }],
+      "close": [{ ... }], "stop": [{ ... }] } },
   "settings": { "device_class": "garage", "icon": null, "enabled": true } }
 ```
 
-Alle Eingabeformate (Raw-Timings, Tri-State, Binär+Protokoll, Pronto) werden beim
-Speichern nach Raw-Timings normalisiert (`data`); das Ursprungsformat bleibt zur
-Anzeige/Bearbeitung erhalten (`protocol`, `code`, `pulse_length`).
+Alle Eingabeformate (Raw-Timings, Tasmota B0/B1, Tri-State, Binär+Protokoll,
+Pronto) werden beim Speichern nach Raw-Timings normalisiert (`data`); das
+Ursprungsformat bleibt zur Anzeige/Bearbeitung erhalten (`protocol`, `code`,
+`pulse_length`). Manuell eingegebene Varianten werden als geordnete Liste
+gespeichert. Ab Core 2026.11 zeigt ein Format-Dropdown den jeweils passenden
+Editor und die benötigten Kodierungseinstellungen auf einer Seite; ältere
+unterstützte Core-Versionen verwenden dafür einen kompatiblen zweistufigen Ablauf.
+Binär-/Tri-State-Varianten nutzen `TextSelector(multiple=True)`; längere
+Raw-/B0/B1-/Pronto-Eingaben nutzen mehrzeilige `ObjectSelector`-Editoren.
 
 ## 3. Module
 
@@ -120,22 +126,30 @@ custom_components/rf_device_manager/
 
 ## 4. Datenfluss
 
-**Senden:** Entity/Service → `RFManager.async_send()` → normalisierte Timings →
-`_StoredCommand(RadioFrequencyCommand)` → `radio_frequency.async_send_command()` →
-ESPHome-Transmitter. Verfügbarkeit der Entities folgt dem Transmitter-State
-(`async_track_state_change_event`).
+**Senden:** Entities und `send_code` wählen über
+`RFManager.async_send_variants()` den nächsten Eintrag je Code-Slot und senden
+ihn über `async_send()`; `send_raw` und der Lerntest senden weiterhin direkt.
+Die Rotation liegt nur im Arbeitsspeicher und beginnt nach einem HA-Neustart
+wieder beim ersten Eintrag. Erkannte Fernbedienungs-Eingaben setzen den nächsten
+Eintrag auf den Nachfolger des empfangenen Codes. Der eigentliche Versand läuft
+über `_StoredCommand(RadioFrequencyCommand)` und
+`radio_frequency.async_send_command()` zum ESPHome-Transmitter. Die Verfügbarkeit
+der Entities folgt dem Transmitter-State (`async_track_state_change_event`).
 
 **Anlernen (Options Flow):** Schrittanzeige je Slot („Schritt 2/4 – Code für
 ‚Schließen‘“) → `async_show_progress` mit LearnSession-Task („Warte auf RF-Signal…“)
-→ Hub liefert Signale → Dedupe per Fingerprint → Auswahlliste mit Analyse-Vorschau
-(Pulse, Basiseinheit, Bits, Hex, Protokollvermutung) → Menü Übernehmen/Testen/
-Wiederholen → nächster Slot → Speichern im Store → Entities erscheinen live
+→ Hub liefert Signale → Dedupe per Fingerprint und Code-Clustering → Auswahlliste
+mit Analyse-Vorschau (Pulse, Basiseinheit, Bits, Hex, Protokollvermutung) und
+Mehrfachauswahl → stärkste Kandidaten werden in ihrer Erstempfangsreihenfolge
+gespeichert → Test der ersten ausgewählten Variante → nächster Slot → Store/Entities live
 (Coordinator-Diff, kein Reload).
 
 **Empfangen (alle Entities):** Jede Entity registriert die Fingerprints ihrer
 Befehls-Slots beim zentralen `CodeMatcher` (fingerprint→Entity, O(1)-Lookup). Eine
-einzige Hub-Subscription routet empfangene Captures an die passende Entity →
-`_on_rf_match(slot, signal)` passt den Zustand an (Schalter kippt, Cover öffnet,
+einzige Hub-Subscription routet empfangene Captures an die passende Entity.
+Der Matcher übergibt auch den Index der passenden Kommandovariante; damit wird
+die nächste Sendeposition synchronisiert. Anschließend passt
+`_on_rf_match(slot, signal)` den Zustand an (Schalter kippt, Cover öffnet,
 Ventilatorstufe ändert sich …) + Bus-Event `rf_device_manager_code_received`. So
 werden auch externe Auslösungen (Original-Fernbedienung) in HA sichtbar;
 sensor/binary_sensor nutzen denselben Pfad als primäre Zustandsquelle (Binary

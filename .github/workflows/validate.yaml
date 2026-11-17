@@ -21,6 +21,10 @@ jobs:
           python-version: "3.13"
       - name: Run decoder tests
         run: python tests/test_decoders.py
+      - name: Run model storage tests
+        run: python tests/test_models.py
+      - name: Run command rotation tests
+        run: python tests/test_rotation.py
 
   hassfest:
     name: Hassfest

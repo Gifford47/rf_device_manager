@@ -162,6 +162,9 @@ class RFDeviceManager:
 
     async def async_remove_device(self, device_id: str) -> None:
         """Purge a device and all of its codes from the store."""
+        rf_manager = get_domain_data(self._hass).rf_manager
+        for code in self._store.async_codes_for_device(device_id).values():
+            rf_manager.reset_code_rotation(code.id)
         await self._store.async_delete_device(device_id)
         self.async_unregister_coordinator(device_id)
         _LOGGER.debug("Removed RF device %s from store", device_id)
@@ -229,6 +232,7 @@ class RFDeviceManager:
         code = self._store.async_delete_code(code_id)
         if code is None:
             return
+        get_domain_data(self._hass).rf_manager.reset_code_rotation(code_id)
         entity_registry = er.async_get(self._hass)
         entity_id = entity_registry.async_get_entity_id(
             code.entity_type, DOMAIN, code.unique_id

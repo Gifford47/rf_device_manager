@@ -36,8 +36,9 @@ class _RFStore(Store[dict[str, Any]]):
     ) -> dict[str, Any]:
         """Migrate stored data to the current schema version.
 
-        Version 1.1 is the initial schema; future versions transform the
-        data here step by step.
+        Version 1.2 stores each slot's commands as a list. The model loader
+        also accepts the previous single-object representation, so no eager
+        data rewrite is needed during migration.
         """
         data = old_data
         _LOGGER.debug(
@@ -46,8 +47,7 @@ class _RFStore(Store[dict[str, Any]]):
             old_major_version,
             old_minor_version,
         )
-        # No migrations needed yet - placeholder chain for future versions:
-        # if old_major_version == 1 and old_minor_version < 2: ...
+        # The 1.2 shape is normalized by RFCode.from_dict for both old and new data.
         return data
 
 
