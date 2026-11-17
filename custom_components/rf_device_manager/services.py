@@ -133,15 +133,19 @@ async def _async_handle_send_code(call: ServiceCall) -> None:
             translation_placeholders={"code": call.data[ATTR_CODE]},
         )
     slot = call.data.get(ATTR_COMMAND) or code.primary_slot()
-    command = code.commands.get(slot) if slot else None
-    if command is None:
+    variants = code.commands.get(slot) if slot else None
+    if not slot or not variants:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
             translation_key="slot_not_configured",
             translation_placeholders={"slot": slot or "?", "name": code.name},
         )
-    await domain_data.rf_manager.async_send(
-        command, device.transmitter, repeat=call.data.get(ATTR_REPEAT)
+    await domain_data.rf_manager.async_send_variants(
+        variants,
+        device.transmitter,
+        code_id=code.id,
+        slot=slot,
+        repeat=call.data.get(ATTR_REPEAT),
     )
 
 

@@ -31,13 +31,19 @@ generic RF device manager.
   validation.
 - **Learning wizard**: step-by-step per command, progress display
   ("Waiting for RF signal…"), automatic **signal clustering** (jittery
-  repeats of the same button collapse into one entry, ranked by how often
-  it was received), decoded previews (protocol, bits, hex, tri-state,
-  rc-switch protocol guess) and live testing before saving.
-- **Manual entry**: raw timings, **Tasmota/Portisch RfRaw B0/B1** bucket
-  codes (`AA B0 … 55`), tri-state (PT2262/EV1527), binary with rc-switch
-  protocols 1–8, Pronto hex — everything is normalized to raw timings
-  internally.
+  repeats collapse into one candidate; candidates are prioritized by
+  reception count to limit noise), decoded previews (protocol, bits, hex,
+  tri-state, rc-switch protocol guess), and multi-select learning of command
+  variants. Retained candidates are shown in first-reception order, allowing
+  fixed rotating-code remotes to be taught as an ordered sequence, with live
+  testing before saving.
+- **Manual entry**: choose raw timings, **Tasmota/Portisch RfRaw B0/B1**,
+  tri-state, binary/rc-switch, or Pronto. Every format supports multiple
+  ordered variants. Binary and tri-state variants use inline multi-value
+  fields; raw/B0/B1/Pronto variants retain multiline editors. On Home
+  Assistant Core 2026.11 and newer, the format dropdown dynamically shows
+  only the matching editor and relevant encoding settings on one page; older
+  supported Core versions use a compatible two-step form.
 - **9 entity types**: switch, light (stepped brightness), fan (speeds,
   oscillation, direction), cover (open/close/stop), button, select, number,
   plus sensor and binary sensor (**receive-side** via fingerprint matching,
@@ -57,6 +63,11 @@ generic RF device manager.
 - **Persistence** via the HA storage API (`.storage/rf_device_manager`),
   versioned and migratable. No YAML files.
 - Translations: **English** and **German**.
+
+When a command has multiple variants, sends rotate through them in their stored order.
+A received command from a physical remote synchronizes the next send to the following
+variant. Rotation state is kept in memory and starts at the first variant after a
+Home Assistant restart; commands with a single variant behave as before.
 
 ## 📋 Requirements
 
@@ -224,7 +235,7 @@ permanently in each entity's `commands` attribute:
 |---|---|---|
 | **Space distance** | constant mark, short/long space | EV1527, PT2262, most cheap 433 MHz remotes |
 | **Pulse width** | constant space, short/long mark | SIRC-style remotes |
-| **PWM (rc-switch)** | mark *and* space share the bit | rc-switch protocols 1–8 (guess included) |
+| **PWM (rc-switch)** | mark *and* space share the bit | supported rc-switch protocols (guess included) |
 | **Manchester** | every bit is a level transition | Oregon sensors, some fan remotes |
 
 Because detection is structural, *new/unknown protocols within these
@@ -235,15 +246,15 @@ Decoded bits also power the jitter-immune **fingerprints** used to cluster
 signals while learning and to match incoming signals for (binary) sensors.
 
 **Sending** replays the captured timings exactly as received (only
-normalized: sign convention, glitch removal, idle trim — no rotation,
-quantization or "cleaning") and repeats them, by default 8 times on air
+normalized: sign convention, glitch removal, idle trim — no timing-frame
+rotation, quantization or "cleaning") and repeats them, by default 8 times on air
 like briefly holding the remote button, since OOK receivers only accept a
 code after several identical frames. The repeat count can be overridden per
 code, per device or per service call.
 
-> **Limitation:** rolling-code systems (KeeLoq, Somfy RTS, …) send a
-> different code on every press — record/replay cannot work for those by
-> design.
+> **Limitation:** true rolling-code systems (KeeLoq, Somfy RTS, …) generate
+> a new, typically authenticated code for every press and are not supported.
+> A fixed, finite set of learned command variants is supported.
 
 ## 🛠️ Extending the decoders
 

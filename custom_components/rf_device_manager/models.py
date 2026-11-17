@@ -284,7 +284,7 @@ class RFCode:
     entity_type: str
     description: str = ""
     enabled: bool = True
-    commands: dict[str, RFCommandData] = field(default_factory=dict)
+    commands: dict[str, list[RFCommandData]] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -327,7 +327,8 @@ class RFCode:
             "enabled": self.enabled,
             "rf_data": {
                 "commands": {
-                    slot: command.to_dict() for slot, command in self.commands.items()
+                    slot: [command.to_dict() for command in variants]
+                    for slot, variants in self.commands.items()
                 }
             },
             "settings": dict(self.settings),
@@ -345,8 +346,16 @@ class RFCode:
             description=data.get("description", ""),
             enabled=bool(data.get("enabled", True)),
             commands={
-                slot: RFCommandData.from_dict(command)
-                for slot, command in commands_raw.items()
+                slot: [
+                    RFCommandData.from_dict(command)
+                    for command in (
+                        raw_variants
+                        if isinstance(raw_variants, list)
+                        else [raw_variants]
+                    )
+                    if isinstance(command, dict)
+                ]
+                for slot, raw_variants in commands_raw.items()
             },
             settings=dict(data.get("settings", {})),
         )

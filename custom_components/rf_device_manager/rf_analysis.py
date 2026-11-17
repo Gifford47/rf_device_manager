@@ -24,9 +24,17 @@ from collections import Counter
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
-from .const import IDLE_TRIM_US, MIN_SIGNAL_PULSES
+from .const import (
+    IDLE_TRIM_US,
+    MIN_SIGNAL_PULSES,
+    PROTOCOL_B0,
+    PROTOCOL_BINARY,
+    PROTOCOL_PRONTO,
+    PROTOCOL_RAW,
+    PROTOCOL_TRISTATE,
+)
 from .decoders import (  # noqa: F401  (re-exported for flows/services)
     RC_PROTOCOLS,
     TRISTATE_TO_BITS,
@@ -185,6 +193,64 @@ def same_code(analysis_a: dict[str, Any], analysis_b: dict[str, Any]) -> bool:
         analysis_a.get("dominant_frame") or [],
         analysis_b.get("dominant_frame") or [],
     )
+
+
+class _LearnCapture(Protocol):
+    """Minimal capture shape needed to group learned signals."""
+
+    received_at: float
+    analysis: dict[str, Any]
+
+
+_LearnCaptureT = TypeVar("_LearnCaptureT", bound=_LearnCapture)
+
+
+def cluster_learn_signals(
+    signals: list[_LearnCaptureT], max_signals: int
+) -> list[_LearnCaptureT]:
+    """Group equivalent captures, rank by frequency, and return in first-seen order.
+
+    Repeated frames and timing jitter are clustered so a single physical code
+    appears only once. Candidates are ranked by reception count to filter
+    noise, but the retained candidates are returned in the order their codes
+    first appeared. Some remotes cycle through a fixed sequence of codes, so
+    their first-reception order is meaningful and must survive learning.
+    """
+    clusters: list[list[_LearnCaptureT]] = []
+    for signal in signals:
+        for cluster in clusters:
+            if same_code(cluster[0].analysis, signal.analysis):
+                cluster.append(signal)
+                break
+        else:
+            clusters.append([signal])
+
+    ranked: list[tuple[float, _LearnCaptureT]] = []
+    for cluster in clusters:
+        representative = max(
+            cluster,
+            key=lambda sig: (
+                sig.analysis.get("times_seen", 1),
+                sig.analysis.get("frame_length", 0),
+            ),
+        )
+        representative.analysis["times_seen"] = sum(
+            sig.analysis.get("times_seen", 1) for sig in cluster
+        )
+        ranked.append((min(signal.received_at for signal in cluster), representative))
+
+    # Keep the most frequently received candidates (to suppress one-off
+    # interference), then restore their chronological first-seen order.
+    ranked.sort(
+        key=lambda item: (
+            item[1].analysis.get("times_seen", 1),
+            item[1].analysis.get("frame_length", 0),
+        ),
+        reverse=True,
+    )
+    selected = ranked[:max_signals]
+    selected.sort(key=lambda item: item[0])
+    return [signal for _, signal in selected]
 
 
 # ---------------------------------------------------------------------------
@@ -363,8 +429,6 @@ def describe_signal(analysis: dict[str, Any], language: str = "en") -> str:
     )
     if (frames := analysis.get("frame_count", 0)) > 1:
         parts.append(f"{frames} Frames")
-    if (variants := analysis.get("variants", 1)) > 1:
-        parts.append(f"{variants} Varianten" if german else f"{variants} variants")
     return " · ".join(parts)
 
 
@@ -619,3 +683,63 @@ def parse_pronto(text: str) -> tuple[list[int], int]:
     if len(timings) < MIN_SIGNAL_PULSES:
         raise RFInputError("too_few_pulses", "Pronto burst too short")
     return timings, carrier_hz
+
+
+
+def parse_manual_variants(
+    input_format: str,
+    values: list[str],
+    *,
+    pulse_length: int | None = None,
+    protocol: int = 1,
+) -> list[tuple[list[int], str | None]]:
+    """Parse an ordered list of manually supplied variants.
+
+    Each input value is one complete command in the selected format. The
+    returned list preserves entry order and contains (timings, code_text)
+    pairs ready for conversion into RFCommandData objects.
+    """
+    if not values:
+        raise RFInputError(
+            "manual_variant_required", "At least one command variant is required"
+        )
+
+    if input_format not in {
+        PROTOCOL_RAW,
+        PROTOCOL_B0,
+        PROTOCOL_TRISTATE,
+        PROTOCOL_BINARY,
+        PROTOCOL_PRONTO,
+    }:
+        raise RFInputError(
+            "invalid_input_format", f"Unsupported input format: {input_format!r}"
+        )
+
+    parsed: list[tuple[list[int], str | None]] = []
+    for index, raw_value in enumerate(values, start=1):
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise RFInputError(
+                "manual_variant_required", f"Variant {index} is empty"
+            )
+
+        code_text: str | None = None
+        if input_format == PROTOCOL_RAW:
+            timings = parse_timings_text(raw_value)
+        elif input_format == PROTOCOL_B0:
+            code_text = raw_value.strip()
+            timings = parse_tasmota_rfraw(code_text)
+        elif input_format == PROTOCOL_TRISTATE:
+            code_text = raw_value.strip().upper()
+            timings = encode_tristate(
+                code_text, pulse_length=pulse_length, protocol=protocol
+            )
+        elif input_format == PROTOCOL_BINARY:
+            code_text = raw_value.strip()
+            timings = encode_binary(
+                code_text, pulse_length=pulse_length, protocol=protocol
+            )
+        else:  # PROTOCOL_PRONTO
+            timings, _carrier = parse_pronto(raw_value)
+        parsed.append((timings, code_text))
+
+    return parsed

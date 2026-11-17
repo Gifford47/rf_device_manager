@@ -145,33 +145,43 @@
         }
       },
       "slot_learn_done": {
-        "title": "Select signal",
-        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe list is sorted by how often each signal was received – the top entry is usually the right one. Select the one matching your button press; the next screen lets you test it and save it.",
+        "title": "Select signals",
+        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe most frequently received candidates are kept to filter out noise, then displayed in the order in which they were first received. The ×N count shows how often each candidate was received. Select every signal that belongs to this button; their displayed order becomes the send order.",
         "data": {
-          "signal": "Received signal"
+          "signals": "Signals to save"
         }
       },
       "slot_manual": {
         "title": "Manual entry: {slot}",
-        "description": "Enter the RF data for **{slot}** ({position}). Fill only the field matching the chosen format.",
+        "description": "Enter the command for **{slot}** ({position}).",
         "data": {
-          "input_format": "Data format",
-          "raw_timings": "Raw timings (µs, e.g. [350, -1050, …])",
-          "b0_code": "Tasmota RfRaw code (AA B0 … 55)",
-          "tristate_code": "Tri-state code (0/1/F)",
-          "binary_code": "Binary code (0/1)",
-          "pronto_code": "Pronto hex code",
+          "input_format": "Input format",
+          "format_help_raw": "Format",
+          "format_help_b0": "Format",
+          "format_help_tristate": "Format",
+          "format_help_binary": "Format",
+          "format_help_pronto": "Format",
+          "variants_raw": "Command variant",
+          "variants_b0": "Command variant",
+          "variants_tristate": "Command variant",
+          "variants_binary": "Command variant",
+          "variants_pronto": "Command variant",
           "pulse_length": "Pulse length (µs)",
           "rc_protocol": "rc-switch protocol",
-          "repeat": "Repeats"
+          "repeat": "Additional transmissions"
+        },
+        "data_description": {
+          "pulse_length": "Base pulse duration used to generate timings. Leave blank to use the selected protocol's default.",
+          "rc_protocol": "Selects the rc-switch timing pattern for Binary and Tri-state input (protocols 1–5, 7 and 8). It does not set the carrier frequency.",
+          "repeat": "Number of additional transmissions after the first. Leave blank to inherit the RF code/device setting; 0 uses the default repeat behavior."
         }
       },
       "slot_confirm": {
         "title": "Confirm command",
-        "description": "**{slot}** ({position}) for “{code_name}”\n\n{summary}\nSource: {source}\nTimings: `{timings_preview}`\n\n{test_note}",
+        "description": "**{slot}** ({position}) for “{code_name}”\n\n{variant_details}\n\nCommand variants to save: {variant_count}. They will be stored in the order shown. Testing sends only the first command variant.\n\n{test_note}",
         "menu_options": {
           "slot_accept": "Save command",
-          "slot_test": "Send test",
+          "slot_test": "Test first command variant",
           "slot_retry": "Discard and retry"
         }
       },
@@ -213,7 +223,7 @@
       },
       "code_relearn": {
         "title": "Learn command again",
-        "description": "Which command of “{code_name}” do you want to learn again?",
+        "description": "Which command of “{code_name}” do you want to learn again? Re-learning replaces all previously stored command variants for that command.",
         "data": {
           "slot": "Command"
         }
@@ -228,6 +238,30 @@
       "code_delete": {
         "title": "Delete RF code",
         "description": "Delete “{code_name}” ({entity_type})? The entity and all learned commands will be removed permanently."
+      },
+      "slot_manual_data": {
+        "title": "Manual entry: {slot}",
+        "description": "Enter the command data for **{slot}** ({position}).",
+        "data": {
+          "format_help_raw": "Format",
+          "variants_raw": "Command variant",
+          "format_help_b0": "Format",
+          "variants_b0": "Command variant",
+          "format_help_tristate": "Format",
+          "variants_tristate": "Command variant",
+          "format_help_binary": "Format",
+          "variants_binary": "Command variant",
+          "format_help_pronto": "Format",
+          "variants_pronto": "Command variant",
+          "pulse_length": "Pulse length (µs)",
+          "rc_protocol": "rc-switch protocol",
+          "repeat": "Additional transmissions"
+        },
+        "data_description": {
+          "pulse_length": "Base pulse duration used to generate timings. Leave blank to use the selected protocol's default.",
+          "rc_protocol": "Selects the rc-switch timing pattern for Binary and Tri-state input (protocols 1–5, 7 and 8). It does not set the carrier frequency.",
+          "repeat": "Number of additional transmissions after the first. Leave blank to inherit the RF code/device setting; 0 uses the default repeat behavior."
+        }
       }
     },
     "progress": {
@@ -248,7 +282,10 @@
       "no_transmitters": "No RF transmitters found.",
       "transmitter_not_found": "This transmitter entity does not exist (anymore).",
       "unsupported_frequency": "The selected transmitter does not support this frequency.",
-      "frequency_required": "Please enter a custom frequency in Hz."
+      "frequency_required": "Please enter a custom frequency in Hz.",
+      "select_signal_required": "Select at least one received signal.",
+      "manual_variant_required": "Add at least one non-empty command variant and remove any empty entries.",
+      "invalid_input_format": "Select a supported RF data format."
     },
     "abort": {
       "no_codes": "This device has no RF codes yet."
@@ -275,11 +312,11 @@
     },
     "input_format": {
       "options": {
-        "raw": "Raw timings (µs)",
-        "b0": "Tasmota RfRaw (B0/B1)",
-        "tristate": "Tri-state (PT2262/EV1527)",
-        "binary": "Binary + rc-switch protocol",
-        "pronto": "Pronto hex"
+        "raw": "Raw timings (µs, e.g. [350, -1050, …])",
+        "b0": "Tasmota RfRaw code (AA B0 … 55)",
+        "tristate": "Tri-state code (0/1/F)",
+        "binary": "Binary code (0/1)",
+        "pronto": "Pronto hex code"
       }
     },
     "switch_device_class": {
@@ -321,6 +358,29 @@
       "options": {
         "slider": "Slider",
         "box": "Input field"
+      }
+    },
+    "manual_format_raw": {
+      "value": "Enter signed timing durations in microseconds. Multiline input is supported."
+    },
+    "manual_format_b0": {
+      "value": "Enter a complete Tasmota/Portisch RfRaw B0 or B1 code."
+    },
+    "manual_format_tristate": {
+      "value": "Enter a PT2262/EV1527-style code using only 0, 1 and F."
+    },
+    "manual_format_binary": {
+      "value": "Enter a bit string containing only 0 and 1."
+    },
+    "manual_format_pronto": {
+      "value": "Enter a complete Pronto hexadecimal code."
+    },
+    "manual_command_variants": {
+      "fields": {
+        "value": {
+          "name": "Command variant",
+          "description": "Enter one complete command in the selected format."
+        }
       }
     }
   },
@@ -385,7 +445,7 @@
         },
         "rc_protocol": {
           "name": "rc-switch protocol",
-          "description": "Timing profile for tri-state/binary codes (1–8)."
+          "description": "Timing profile for tri-state/binary codes (1–5, 7 and 8)."
         },
         "repeat": {
           "name": "Repeats",

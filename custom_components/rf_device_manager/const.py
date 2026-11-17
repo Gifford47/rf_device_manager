@@ -15,7 +15,7 @@ MODEL = "Virtual RF device"
 
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 1
+STORAGE_MINOR_VERSION = 2
 STORAGE_SAVE_DELAY = 1.0  # seconds, debounce for Store.async_delay_save
 
 # ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ FREQUENCY_PRESET_CUSTOM = "custom"
 # ---------------------------------------------------------------------------
 
 DEFAULT_LEARN_TIMEOUT = 30.0  # seconds to wait for the first signal
-LEARN_COLLECT_WINDOW = 4.0  # seconds to keep collecting after the first signal
+LEARN_COLLECT_WINDOW = 10.0  # seconds to keep collecting after the first signal
 LEARN_MAX_SIGNALS = 8  # distinct signals kept per learning session
 MIN_SIGNAL_PULSES = 8  # ignore captures shorter than this many edges
 

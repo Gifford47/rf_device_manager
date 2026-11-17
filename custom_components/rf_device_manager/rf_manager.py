@@ -39,6 +39,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from rf_protocols import ModulationType, RadioFrequencyCommand
 
 from . import rf_analysis
+from .command_rotation import CommandRotation
 from .const import (
     DEFAULT_LEARN_TIMEOUT,
     DEFAULT_SEND_REPEAT,
@@ -479,51 +480,6 @@ class ReceiverHub:
 # ---------------------------------------------------------------------------
 
 
-def _cluster_learn_signals(
-    signals: list[CapturedSignal], max_signals: int
-) -> list[CapturedSignal]:
-    """Group captures that carry the same RF code and rank by frequency.
-
-    Real button presses repeat their frame many times while 433 MHz noise
-    and neighbouring devices produce one-off captures, so after clustering
-    (identical decoded bits, or dominant frames within timing tolerance)
-    the wanted signal reliably sorts to the top.
-    """
-    clusters: list[list[CapturedSignal]] = []
-    for signal in signals:
-        for cluster in clusters:
-            if rf_analysis.same_code(cluster[0].analysis, signal.analysis):
-                cluster.append(signal)
-                break
-        else:
-            clusters.append([signal])
-
-    merged: list[CapturedSignal] = []
-    for cluster in clusters:
-        representative = max(
-            cluster,
-            key=lambda sig: (
-                sig.analysis.get("times_seen", 1),
-                sig.analysis.get("frame_length", 0),
-            ),
-        )
-        representative.analysis["times_seen"] = sum(
-            sig.analysis.get("times_seen", 1) for sig in cluster
-        )
-        if len(cluster) > 1:
-            representative.analysis["variants"] = len(cluster)
-        merged.append(representative)
-
-    merged.sort(
-        key=lambda sig: (
-            sig.analysis.get("times_seen", 1),
-            sig.analysis.get("frame_length", 0),
-        ),
-        reverse=True,
-    )
-    return merged[:max_signals]
-
-
 @dataclass
 class LearnSession:
     """One learning pass: wait for signals, collect, cluster.
@@ -569,7 +525,9 @@ class LearnSession:
         finally:
             unsubscribe()
 
-        self.signals = _cluster_learn_signals(self.signals, self.max_signals)
+        self.signals = rf_analysis.cluster_learn_signals(
+            self.signals, self.max_signals
+        )
         return self.signals
 
 
@@ -577,7 +535,7 @@ class LearnSession:
 # Received-code matcher
 # ---------------------------------------------------------------------------
 
-MatchCallback = Callable[[str, CapturedSignal], None]
+MatchCallback = Callable[[str, CapturedSignal, int], None]
 
 # A received code matches a stored one when their decoded bit strings differ
 # by at most this fraction of their length. Real receptions jitter and often
@@ -592,6 +550,7 @@ class _MatchEntry:
     """One registered command slot to match received signals against."""
 
     slot: str
+    variant_index: int
     fingerprint: str | None
     bits: str | None
     callback: MatchCallback
@@ -600,8 +559,8 @@ class _MatchEntry:
 class CodeMatcher:
     """Routes received RF signals to the entities whose code they match.
 
-    Every entity registers its command slots here (and re-registers whenever
-    they change). A single hub subscription then routes each incoming capture
+    Every entity registers each command variant here (and re-registers whenever
+    its commands change). A single hub subscription then routes each incoming capture
     to the matching entities, so an external remote press updates the Home
     Assistant entity state. Matching is tolerant: an exact fingerprint hit is
     preferred, otherwise decoded bit strings are compared with a small Hamming
@@ -617,17 +576,17 @@ class CodeMatcher:
     @callback
     def async_register(
         self,
-        slots: list[tuple[str, str | None, str | None]],
+        slots: list[tuple[str, int, str | None, str | None]],
         match_callback: MatchCallback,
     ) -> CALLBACK_TYPE:
-        """Register an entity's slots as ``(slot, fingerprint, bits)`` tuples.
+        """Register commands as ``(slot, index, fingerprint, bits)`` tuples.
 
         Returns a callback that removes exactly these registrations. The hub
         subscription starts on the first registration and stops with the last.
         """
         added = [
-            _MatchEntry(slot, fingerprint, bits, match_callback)
-            for slot, fingerprint, bits in slots
+            _MatchEntry(slot, variant_index, fingerprint, bits, match_callback)
+            for slot, variant_index, fingerprint, bits in slots
             if fingerprint or bits
         ]
         self._entries.extend(added)
@@ -650,7 +609,7 @@ class CodeMatcher:
 
     @callback
     def _dispatch(self, signal: CapturedSignal) -> None:
-        """Route a captured signal to the best-matching slot of each entity.
+        """Route a capture to the best-matching command variant per entity.
 
         Crucially, at most **one** slot per entity is triggered per signal -
         the closest match. Sibling buttons of one remote often differ by a
@@ -661,7 +620,7 @@ class CodeMatcher:
         fingerprint = signal.fingerprint
         bits = signal.analysis.get("bits")
 
-        # callback (entity) -> (best distance, best entry)
+        # callback (entity) -> (best distance, best command variant)
         best: dict[MatchCallback, tuple[int, _MatchEntry]] = {}
         for entry in self._entries:
             distance = self._match_distance(entry, fingerprint, bits)
@@ -673,7 +632,7 @@ class CodeMatcher:
 
         for _distance, entry in best.values():
             try:
-                entry.callback(entry.slot, signal)
+                entry.callback(entry.slot, signal, entry.variant_index)
             except Exception:  # noqa: BLE001 - one bad handler must not break others
                 _LOGGER.exception("Error handling received RF code")
 
@@ -704,6 +663,7 @@ class RFManager:
         self._hass = hass
         self.hub = ReceiverHub(hass)
         self.matcher = CodeMatcher(self.hub)
+        self._variant_rotation = CommandRotation()
 
     async def async_send(
         self,
@@ -755,6 +715,44 @@ class RFManager:
             rf_command.repeat_count,
         )
         await rf_async_send_command(self._hass, transmitter, rf_command)
+
+    async def async_send_variants(
+        self,
+        variants: list[RFCommandData],
+        transmitter: str,
+        *,
+        code_id: str,
+        slot: str,
+        repeat: int | None = None,
+    ) -> None:
+        """Send the next command variant and advance its in-memory rotation."""
+        if not variants:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="empty_command"
+            )
+        # Advance before awaiting transmission so concurrent sends reserve
+        # different variants rather than racing on the same current index.
+        index = self._variant_rotation.next_index(code_id, slot, len(variants))
+        await self.async_send(variants[index], transmitter, repeat=repeat)
+
+    @callback
+    def sync_variant(
+        self, code_id: str, slot: str, variant_index: int, variant_count: int
+    ) -> None:
+        """Set the next send to follow a command variant received remotely."""
+        self._variant_rotation.sync_after_receive(
+            code_id, slot, variant_index, variant_count
+        )
+
+    @callback
+    def reset_command_rotation(self, code_id: str, slot: str) -> None:
+        """Reset one command's next variant to the first entry."""
+        self._variant_rotation.reset_command(code_id, slot)
+
+    @callback
+    def reset_code_rotation(self, code_id: str) -> None:
+        """Remove all rotation state for a deleted RF code."""
+        self._variant_rotation.reset_code(code_id)
 
     async def async_send_raw(
         self,

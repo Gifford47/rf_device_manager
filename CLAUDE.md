@@ -53,13 +53,21 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and data model, and
   (`entry.data` holds only `device_id`; `entry.options` holds the mutable
   settings) *and* mirrored into the central store.
 - **`RFCode`** — one code = **one entity**. Has an `entity_type` and a dict of
-  **command slots** → `RFCommandData`.
+  **command slots** → ordered `list[RFCommandData]` variants.
 - **`RFCommandData`** — one transmittable/matchable command. `data` is always
   normalized raw timings. `protocol`/`code` keep the original input form;
   `extra` holds decode results (`encoding`, `bits`, `hex`, `fingerprint`, …).
   `fingerprint` is the key used for receive-matching.
 - **Command slots** are derived from the entity type by
   `models.build_slots(entity_type, settings)`, e.g. switch → `on`/`off`; cover →
+  Each slot stores an ordered list of complete `RFCommandData` variants. The
+  learner filters candidates by reception frequency but retains the first-seen
+  order of the selected signals. Re-learning a slot replaces its full variant
+  list. Legacy storage with one command object is normalized to a one-item
+  list on load. Receive matching registers every variant; sends rotate through
+  the list independently per code/slot. A matched physical-remote reception
+  synchronizes the next send to the following variant. The counter is in
+  memory only and resets to the first variant after a Home Assistant restart.
   `open`/`close`/`stop`; fan → `off`/`speed_1..n`/`oscillate`/direction; select →
   `option:<name>`; number/sensor → `value:<v>`. Slot keys are the contract
   between the learn wizard, the platforms, and the matcher.
@@ -77,7 +85,7 @@ the `DECODERS` chain **in order**; first structural match wins:
 |---|---|---|
 | `space_distance` | constant mark, short/long space | EV1527, PT2262 |
 | `mark_width` | constant space, short/long mark | SIRC-style, rc-switch P8 |
-| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–8 (+ guess) |
+| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–5, P7 (+ guess) |
 | `manchester` | every bit is a level transition | Oregon, some fans |
 
 Detection is **structural, not a protocol database** — unknown remotes decode as
@@ -110,8 +118,9 @@ transition). Don't "simplify" that away.
   matching received signals until re-learned.
 - `same_code(a, b)` clusters captures: identical decoded bits, else
   `frames_similar` (±30% per-pulse tolerance). Used by the learn session.
-- Manual input parsers: `parse_timings_text`, `parse_tasmota_rfraw` (B0/B1
-  bucket format), `encode_binary`/`encode_tristate` (rc-switch), `parse_pronto`.
+- Manual input parsing: `parse_manual_variants` preserves the entered
+  sequence across raw, Tasmota B0/B1, tri-state, binary and Pronto variants;
+  the individual format parsers/encoders remain reusable pure-Python helpers.
 
 ### Tasmota RfRaw B0/B1 (parse_tasmota_rfraw)
 
@@ -124,7 +133,15 @@ polarity is the non-obvious part.
 ## RF communication (rf_manager.py)
 
 - **`RFManager`** — facade: `hub` (ReceiverHub), `matcher` (CodeMatcher),
-  `async_send()`, `new_learn_session()`.
+  `async_send()`, `async_send_variants()`, `sync_variant()`,
+  `new_learn_session()`.
+- **`async_send_variants()`** — advances an in-memory next-index per
+  (code id, command slot), then sends that stored variant through
+  `async_send()`. The index advances before awaiting the send so concurrent
+  calls reserve different variants.
+- **`sync_variant()`** — after a physical-remote reception is matched and
+  passes the existing self-echo/debounce guards, sets the next send to the
+  variant after the one received. The counter is not persisted.
 - **`async_send()`** — normalizes timings, checks the transmitter isn't
   `unavailable` (note: `unknown` is a valid "ready" state — a transmitter that
   has never sent reports `unknown`), builds `_StoredCommand`, applies
@@ -137,7 +154,7 @@ polarity is the non-obvious part.
   subscriber, detach on last; a 30s maintenance timer re-attaches after ESPHome
   reconnects. `async_discover()` refreshes the receiver-name cache shown in the
   learn UI.
-- **`CodeMatcher`** — registered slots `(slot, fingerprint, bits, callback)`;
+- **`CodeMatcher`** — registered variants `(slot, index, fingerprint, bits, callback)`;
   one hub subscription routes each received capture to the matching entities.
   Matching is **tolerant**: exact fingerprint = distance 0, else decoded-bit
   Hamming distance ≤ `_MATCH_BIT_TOLERANCE` (15%) — real receptions jitter and
@@ -151,8 +168,10 @@ polarity is the non-obvious part.
   re-learned. Per-slot reception is debounced in the entity
   (`RECV_DEBOUNCE_S`) since one press arrives as many repeated frames.
 - **`LearnSession`** — waits for the first signal (timeout), then collects for a
-  short window, dedups by exact fingerprint, then `_cluster_learn_signals`
-  merges same-code captures (`same_code`) and ranks by reception count. This is
+  short window, dedups by exact fingerprint, then
+  `rf_analysis.cluster_learn_signals()` merges same-code captures
+  (`same_code`) and ranks by reception count while retaining first-seen order.
+  This is
   why a single button press yields one top-ranked entry instead of ~8
   noise/jitter duplicates.
 
@@ -170,9 +189,10 @@ polarity is the non-obvious part.
   slow. Keep this ordering when adding actions.
 - **Receiving (all entities):** the base registers its commands' fingerprints
   with the `CodeMatcher` in `async_added_to_hass` and re-registers on every
-  coordinator update (fingerprints change after re-learn). On a match,
-  `_handle_received` fires the `rf_device_manager_code_received` bus event and
-  calls `_on_rf_match(slot, signal)`.
+  coordinator update (fingerprints change after re-learn). The matcher passes
+  the matched variant index to `_handle_received`; after self-echo/debounce
+  checks this synchronizes the next send, fires the
+  `rf_device_manager_code_received` bus event and calls `_on_rf_match(slot, signal)`.
   - Send platforms (switch/light/cover/fan/select/number) override
     `_on_rf_match` to update optimistic state from the matched slot — this is
     how an external remote press is reflected in HA.
@@ -194,8 +214,15 @@ polarity is the non-obvious part.
     `slot_menu` (learn/manual/skip) → `slot_learn` (`async_show_progress` on the
     `LearnSession` task) → `slot_learn_done` (pick a clustered signal) →
     `slot_confirm` (menu: **Save / Test / Discard** buttons) → next slot →
-    `save_code`. Manual entry (`slot_manual`) supports raw / Tasmota B0 /
-    tri-state / binary / Pronto.
+    `save_code`. The confirmation lists every selected command variant; its
+    test action sends only the first selected variant. Manual entry uses a
+    format dropdown. Core 2026.11+ displays only the selected format's editor
+    and settings on one page; earlier supported versions use a two-step
+    compatibility form. Both paths share selector builders and the parser.
+    Binary/Tri-state use inline `TextSelector(multiple=True)`; Raw/B0/B1/Pronto
+    use repeatable `ObjectSelector` lists with multiline editors. Pulse length and
+    rc-switch protocol appear only for Binary/Tri-state. Repeat is available
+    for every format; 0/unset still invokes `DEFAULT_SEND_REPEAT`.
   - **No-receiver guard:** `slot_learn` refreshes `hub.async_discover()` and,
     if no receiver is found, routes to `slot_no_receiver` (warn + retry /
     manual / skip) instead of waiting for a signal that can never arrive.

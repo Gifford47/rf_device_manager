@@ -19,6 +19,7 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant import data_entry_flow
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -28,12 +29,16 @@ from homeassistant.config_entries import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    ConstantSelector,
+    ConstantSelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
     IconSelector,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    ObjectSelector,
+    ObjectSelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -44,8 +49,6 @@ from homeassistant.helpers.selector import (
 
 from . import rf_analysis
 from .const import (
-    CONF_B0_CODE,
-    CONF_BINARY_CODE,
     CONF_BRIGHTNESS_STEPS,
     CONF_DEFAULT_REPEAT,
     CONF_DESCRIPTION,
@@ -68,15 +71,12 @@ from .const import (
     CONF_NUMBER_MODE,
     CONF_OFF_DELAY,
     CONF_OPTIONS,
-    CONF_PRONTO_CODE,
     CONF_PULSE_LENGTH,
-    CONF_RAW_TIMINGS,
     CONF_RC_PROTOCOL,
     CONF_REPEAT,
     CONF_SOURCE_ENTRY,
     CONF_SPEED_COUNT,
     CONF_TRANSMITTER,
-    CONF_TRISTATE_CODE,
     CONF_UNIT,
     CONF_VALUES,
     DEFAULT_FREQUENCY,
@@ -158,6 +158,162 @@ def _frequency_preset_selector() -> SelectSelector:
             translation_key="frequency_preset",
         )
     )
+
+
+# Conditional field visibility was added in Home Assistant Core 2026.11.
+# Keep a two-step compatibility flow for older supported Core releases.
+_HAS_CONDITIONAL_FORM_FIELDS = (
+    hasattr(data_entry_flow, "Required")
+    and hasattr(data_entry_flow, "Optional")
+    and hasattr(data_entry_flow, "probatio")
+)
+
+_MANUAL_FORMATS = (
+    PROTOCOL_RAW,
+    PROTOCOL_B0,
+    PROTOCOL_TRISTATE,
+    PROTOCOL_BINARY,
+    PROTOCOL_PRONTO,
+)
+
+
+def _manual_format_selector() -> SelectSelector:
+    """Choose the manual RF input format from a compact dropdown."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=list(_MANUAL_FORMATS),
+            mode=SelectSelectorMode.DROPDOWN,
+            translation_key="input_format",
+        )
+    )
+
+
+def _manual_format_help_selector(input_format: str) -> ConstantSelector:
+    """Build the explanation shown for the selected manual input format."""
+    return ConstantSelector(
+        ConstantSelectorConfig(
+            value=input_format,
+            translation_key=f"manual_format_{input_format}",
+        )
+    )
+
+
+def _manual_variant_key(input_format: str) -> str:
+    """Return the form field name for variants of one input format."""
+    return f"variants_{input_format}"
+
+
+def _manual_repeat_selector() -> NumberSelector:
+    """Build the repeat-count selector shared by both manual form paths."""
+    return NumberSelector(
+        NumberSelectorConfig(min=0, max=20, step=1, mode=NumberSelectorMode.BOX)
+    )
+
+
+def _manual_pulse_length_selector() -> NumberSelector:
+    """Build the optional pulse-length selector used by encoded formats."""
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=50,
+            max=5000,
+            step=1,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement="µs",
+        )
+    )
+
+
+def _manual_rc_protocol_selector() -> SelectSelector:
+    """Build the rc-switch protocol selector used by encoded formats."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[str(protocol) for protocol in rf_analysis.RC_PROTOCOLS],
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+
+
+def _command_analysis(command: RFCommandData) -> dict[str, Any]:
+    """Build the common analysis view used by confirmation and code details."""
+    return {
+        **command.extra,
+        "pulse_count": len(command.data),
+        "frame_count": command.extra.get("frame_count", 1),
+        "base_unit_us": command.pulse_length,
+        "bit_count": command.extra.get("bit_count")
+        or len(command.extra.get("bits", ""))
+        or None,
+        "tristate": command.extra.get("tristate")
+        or (command.code if command.protocol == PROTOCOL_TRISTATE else None),
+    }
+
+
+def _manual_variant_selector(input_format: str) -> ObjectSelector | TextSelector:
+    """Build the per-format repeatable variant input.
+
+    Binary and tri-state codes are short single-line strings, so use the
+    native inline multi-text input. Formats with long payloads use the object
+    list editor so each variant opens a multiline text editor.
+    """
+    if input_format in (PROTOCOL_BINARY, PROTOCOL_TRISTATE):
+        return TextSelector(TextSelectorConfig(multiple=True))
+
+    return ObjectSelector(
+        ObjectSelectorConfig(
+            fields={
+                "value": {
+                    "selector": TextSelector(TextSelectorConfig(multiline=True)),
+                    "required": True,
+                }
+            },
+            multiple=True,
+            label_field="value",
+            translation_key="manual_command_variants",
+        )
+    )
+
+
+def _manual_dynamic_schema() -> Any:
+    """Build the single-page manual form for Core versions with field visibility."""
+    fields: dict[Any, Any] = {}
+
+    # Put the selected format's explanation immediately above the format
+    # dropdown. The condition refers to the selector even though it follows.
+    for input_format in _MANUAL_FORMATS:
+        visible = {"field": CONF_INPUT_FORMAT, "value": input_format}
+        fields[
+            data_entry_flow.Optional(
+                f"format_help_{input_format}", visible=visible
+            )
+        ] = _manual_format_help_selector(input_format)
+
+    fields[
+        data_entry_flow.Required(CONF_INPUT_FORMAT, default=PROTOCOL_RAW)
+    ] = _manual_format_selector()
+
+    for input_format in _MANUAL_FORMATS:
+        visible = {"field": CONF_INPUT_FORMAT, "value": input_format}
+        fields[
+            data_entry_flow.Required(
+                _manual_variant_key(input_format), visible=visible
+            )
+        ] = _manual_variant_selector(input_format)
+
+    encoded_formats = {
+        "field": CONF_INPUT_FORMAT,
+        "operator": "in",
+        "value": [PROTOCOL_BINARY, PROTOCOL_TRISTATE],
+    }
+    fields[
+        data_entry_flow.Optional(CONF_PULSE_LENGTH, visible=encoded_formats)
+    ] = _manual_pulse_length_selector()
+    fields[
+        data_entry_flow.Required(
+            CONF_RC_PROTOCOL, default="1", visible=encoded_formats
+        )
+    ] = _manual_rc_protocol_selector()
+    fields[data_entry_flow.Optional(CONF_REPEAT)] = _manual_repeat_selector()
+    return data_entry_flow.probatio.Schema(fields)
 
 
 def _device_schema() -> vol.Schema:
@@ -405,6 +561,8 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         self._learn_task: asyncio.Task | None = None
         self._selected_code_id: str | None = None
         self._test_note = ""
+        self._pending_variants: list[RFCommandData] = []
+        self._manual_format: str | None = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -730,6 +888,9 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         """Choose how to provide the command for the current slot."""
         assert self._code is not None
         self._pending = None
+        self._pending_variants = []
+        self._signals = []
+        self._manual_format = None
         # Refresh the receiver list so the menu (and the learn availability
         # check) reflect the current state of the ESPHome nodes.
         await get_domain_data(self.hass).rf_manager.hub.async_discover()
@@ -819,19 +980,33 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_learn_done(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let the user pick one of the captured signals.
+        """Let the user select one or more captured signals as command variants."""
+        errors: dict[str, str] = {}
 
-        A single capture skips straight to the confirmation step. Otherwise
-        the user selects one from the list; the following confirmation step
-        provides the "Test" and "Save" buttons (no toggle here).
-        """
+        # A single distinct capture needs no selection page.
         if len(self._signals) == 1 and user_input is None:
-            self._async_build_pending(self._signals[0])
+            self._pending_variants = [self._async_build_pending(self._signals[0])]
+            self._pending = self._pending_variants[0]
             return await self.async_step_slot_confirm()
 
         if user_input is not None:
-            self._async_build_pending(self._signals[int(user_input["signal"])])
-            return await self.async_step_slot_confirm()
+            selected = user_input.get("signals", [])
+            if not selected:
+                errors["base"] = "select_signal_required"
+            else:
+                # Preserve the capture list order, not the order in which the
+                # user happened to tick the checkboxes. This is important for
+                # remotes whose codes follow a fixed rotation.
+                indices = sorted({int(index) for index in selected})
+                if any(index < 0 or index >= len(self._signals) for index in indices):
+                    errors["base"] = "select_signal_required"
+                else:
+                    self._pending_variants = [
+                        self._async_build_pending(self._signals[index])
+                        for index in indices
+                    ]
+                    self._pending = self._pending_variants[0]
+                    return await self.async_step_slot_confirm()
 
         options = [
             SelectOptionDict(
@@ -853,13 +1028,16 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             step_id="slot_learn_done",
             data_schema=vol.Schema(
                 {
-                    vol.Required("signal", default="0"): SelectSelector(
+                    vol.Required("signals", default=["0"]): SelectSelector(
                         SelectSelectorConfig(
-                            options=options, mode=SelectSelectorMode.LIST
+                            options=options,
+                            mode=SelectSelectorMode.LIST,
+                            multiple=True,
                         )
                     ),
                 }
             ),
+            errors=errors,
             description_placeholders={
                 **self._slot_placeholders(),
                 "signals": summary,
@@ -867,8 +1045,8 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         )
 
     @callback
-    def _async_build_pending(self, signal: CapturedSignal) -> None:
-        """Turn a captured signal into the pending command of the slot."""
+    def _async_build_pending(self, signal: CapturedSignal) -> RFCommandData:
+        """Turn a captured signal into a command variant for the current slot."""
         assert self._code is not None
         device = self._device()
         analysis = signal.analysis
@@ -886,7 +1064,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             )
             if key in analysis
         }
-        self._pending = RFCommandData(
+        return RFCommandData(
             protocol=PROTOCOL_RAW,
             frequency=signal.frequency or device.frequency,
             data=list(signal.timings),
@@ -900,62 +1078,48 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_manual(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manually enter RF data in one of the supported formats."""
+        """Enter manual RF data using a format-specific form."""
         assert self._code is not None
         errors: dict[str, str] = {}
+
+        if _HAS_CONDITIONAL_FORM_FIELDS:
+            if user_input is not None:
+                self._manual_format = user_input.get(CONF_INPUT_FORMAT)
+                if self._manual_format not in _MANUAL_FORMATS:
+                    errors["base"] = "invalid_input_format"
+                else:
+                    try:
+                        self._pending_variants = self._parse_manual_input(user_input)
+                    except rf_analysis.RFInputError as err:
+                        errors["base"] = err.error_key
+                    else:
+                        self._pending = self._pending_variants[0]
+                        return await self.async_step_slot_confirm()
+
+            schema = _manual_dynamic_schema()
+            if user_input is not None:
+                schema = self.add_suggested_values_to_schema(schema, user_input)
+            return self.async_show_form(
+                step_id="slot_manual",
+                data_schema=schema,
+                errors=errors,
+                description_placeholders=self._slot_placeholders(),
+            )
+
+        # Core versions before 2026.11 do not support conditional fields.
+        # Keep the same dropdown, then show only the selected format's inputs.
         if user_input is not None:
-            try:
-                self._pending = self._parse_manual_input(user_input)
-            except rf_analysis.RFInputError as err:
-                errors["base"] = err.error_key
+            self._manual_format = user_input.get(CONF_INPUT_FORMAT)
+            if self._manual_format not in _MANUAL_FORMATS:
+                errors["base"] = "invalid_input_format"
             else:
-                return await self.async_step_slot_confirm()
+                return await self.async_step_slot_manual_data()
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_INPUT_FORMAT, default=PROTOCOL_RAW): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            PROTOCOL_RAW,
-                            PROTOCOL_B0,
-                            PROTOCOL_TRISTATE,
-                            PROTOCOL_BINARY,
-                            PROTOCOL_PRONTO,
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                        translation_key="input_format",
-                    )
-                ),
-                vol.Optional(CONF_RAW_TIMINGS): TextSelector(
-                    TextSelectorConfig(multiline=True)
-                ),
-                vol.Optional(CONF_B0_CODE): TextSelector(
-                    TextSelectorConfig(multiline=True)
-                ),
-                vol.Optional(CONF_TRISTATE_CODE): TextSelector(),
-                vol.Optional(CONF_BINARY_CODE): TextSelector(),
-                vol.Optional(CONF_PRONTO_CODE): TextSelector(
-                    TextSelectorConfig(multiline=True)
-                ),
-                vol.Optional(CONF_PULSE_LENGTH): NumberSelector(
-                    NumberSelectorConfig(
-                        min=50, max=5000, step=1, mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="µs",
-                    )
-                ),
-                vol.Required(CONF_RC_PROTOCOL, default="1"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=[
-                            str(protocol) for protocol in rf_analysis.RC_PROTOCOLS
-                        ],
-                        mode=SelectSelectorMode.DROPDOWN,
-                    )
-                ),
-                vol.Optional(CONF_REPEAT): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0, max=20, step=1, mode=NumberSelectorMode.BOX
-                    )
-                ),
+                vol.Required(
+                    CONF_INPUT_FORMAT, default=PROTOCOL_RAW
+                ): _manual_format_selector(),
             }
         )
         if user_input is not None:
@@ -967,97 +1131,156 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             description_placeholders=self._slot_placeholders(),
         )
 
-    def _parse_manual_input(self, user_input: dict[str, Any]) -> RFCommandData:
-        """Build a command from manual input; raises ``RFInputError``."""
+    async def async_step_slot_manual_data(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Compatibility step for Core versions without conditional fields."""
         assert self._code is not None
+        assert self._manual_format is not None
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                self._pending_variants = self._parse_manual_input(user_input)
+            except rf_analysis.RFInputError as err:
+                errors["base"] = err.error_key
+            else:
+                self._pending = self._pending_variants[0]
+                return await self.async_step_slot_confirm()
+
+        fields: dict[Any, Any] = {
+            vol.Optional(f"format_help_{self._manual_format}"): (
+                _manual_format_help_selector(self._manual_format)
+            ),
+            vol.Required(_manual_variant_key(self._manual_format)): (
+                _manual_variant_selector(self._manual_format)
+            ),
+        }
+        if self._manual_format in (PROTOCOL_BINARY, PROTOCOL_TRISTATE):
+            fields.update(
+                {
+                    vol.Optional(CONF_PULSE_LENGTH): _manual_pulse_length_selector(),
+                    vol.Required(CONF_RC_PROTOCOL, default="1"): (
+                        _manual_rc_protocol_selector()
+                    ),
+                }
+            )
+        fields[vol.Optional(CONF_REPEAT)] = _manual_repeat_selector()
+
+        schema = vol.Schema(fields)
+        if user_input is not None:
+            schema = self.add_suggested_values_to_schema(schema, user_input)
+        return self.async_show_form(
+            step_id="slot_manual_data",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders=self._slot_placeholders(),
+        )
+
+    def _parse_manual_input(
+        self, user_input: dict[str, Any]
+    ) -> list[RFCommandData]:
+        """Parse all manually entered variants into transmittable commands."""
+        assert self._code is not None
+        assert self._manual_format is not None
         device = self._device()
-        input_format = user_input[CONF_INPUT_FORMAT]
+        input_format = self._manual_format
+
+        rows = user_input.get(_manual_variant_key(input_format))
+        if not isinstance(rows, list) or not rows:
+            raise rf_analysis.RFInputError(
+                "manual_variant_required", "Enter at least one variant"
+            )
+
+        values: list[str] = []
+        for index, row in enumerate(rows, start=1):
+            if isinstance(row, str):
+                value = row
+            elif isinstance(row, dict):
+                value = row.get("value")
+            else:
+                value = None
+            if not isinstance(value, str) or not value.strip():
+                raise rf_analysis.RFInputError(
+                    "manual_variant_required",
+                    f"Variant {index} is empty",
+                )
+            values.append(value)
+
         pulse_raw = user_input.get(CONF_PULSE_LENGTH)
         pulse_length = int(pulse_raw) if pulse_raw else None
         rc_protocol = int(user_input.get(CONF_RC_PROTOCOL, "1"))
-        code_text: str | None = None
-        frequency = device.frequency
+        parsed_variants = rf_analysis.parse_manual_variants(
+            input_format,
+            values,
+            pulse_length=pulse_length,
+            protocol=rc_protocol,
+        )
 
-        if input_format == PROTOCOL_RAW:
-            timings = rf_analysis.parse_timings_text(
-                user_input.get(CONF_RAW_TIMINGS) or ""
-            )
-        elif input_format == PROTOCOL_B0:
-            code_text = (user_input.get(CONF_B0_CODE) or "").strip()
-            timings = rf_analysis.parse_tasmota_rfraw(code_text)
-        elif input_format == PROTOCOL_TRISTATE:
-            code_text = (user_input.get(CONF_TRISTATE_CODE) or "").strip().upper()
-            timings = rf_analysis.encode_tristate(
-                code_text, pulse_length=pulse_length, protocol=rc_protocol
-            )
-        elif input_format == PROTOCOL_BINARY:
-            code_text = (user_input.get(CONF_BINARY_CODE) or "").strip()
-            timings = rf_analysis.encode_binary(
-                code_text, pulse_length=pulse_length, protocol=rc_protocol
-            )
-        elif input_format == PROTOCOL_PRONTO:
-            code_text = (user_input.get(CONF_PRONTO_CODE) or "").strip()
-            timings, _carrier = rf_analysis.parse_pronto(code_text)
-        else:  # pragma: no cover - selector restricts the values
-            raise rf_analysis.RFInputError("invalid_timings", input_format)
-
-        timings = rf_analysis.normalize(timings)
         repeat_raw = user_input.get(CONF_REPEAT)
         repeat = (
             int(repeat_raw)
             if repeat_raw is not None
             else int(self._code.settings.get(CONF_REPEAT, device.default_repeat))
         )
-        # Run the decoder chain so manual entries get the same protocol
-        # display (encoding, bits, hex) as learned signals.
-        analysis = rf_analysis.analyze(timings)
-        extra = {
-            key: analysis[key]
-            for key in (
-                "encoding",
-                "bits",
-                "bit_count",
-                "hex",
-                "tristate",
-                "protocol_guess",
-                "frame_count",
+
+        commands: list[RFCommandData] = []
+        for timings, code_text in parsed_variants:
+            timings = rf_analysis.normalize(timings)
+            analysis = rf_analysis.analyze(timings)
+            extra = {
+                key: analysis[key]
+                for key in (
+                    "encoding",
+                    "bits",
+                    "bit_count",
+                    "hex",
+                    "tristate",
+                    "protocol_guess",
+                    "frame_count",
+                )
+                if key in analysis
+            }
+            commands.append(
+                RFCommandData(
+                    protocol=input_format,
+                    frequency=device.frequency,
+                    data=timings,
+                    pulse_length=pulse_length or analysis.get("base_unit_us"),
+                    code=code_text,
+                    repeat=repeat,
+                    source="manual",
+                    fingerprint=analysis.get("fingerprint"),
+                    extra=extra,
+                )
             )
-            if key in analysis
-        }
-        return RFCommandData(
-            protocol=input_format,
-            frequency=frequency,
-            data=timings,
-            pulse_length=pulse_length or analysis.get("base_unit_us"),
-            code=code_text,
-            repeat=repeat,
-            source="manual",
-            fingerprint=analysis.get("fingerprint"),
-            extra=extra,
-        )
+        return commands
 
     async def async_step_slot_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Preview the pending command: accept, test or retry."""
+        """Preview the first selected variant; accept, test or retry the selection."""
         assert self._pending is not None
         pending = self._pending
-        pending_analysis = {
-            **pending.extra,
-            "pulse_count": len(pending.data),
-            "frame_count": pending.extra.get("frame_count", 1),
-            "base_unit_us": pending.pulse_length,
-            "bit_count": pending.extra.get("bit_count")
-            or len(pending.extra.get("bits", ""))
-            or None,
-            "tristate": pending.extra.get("tristate")
-            or (pending.code if pending.protocol == PROTOCOL_TRISTATE else None),
-        }
+        if not self._pending_variants:
+            self._pending_variants = [pending]
+        is_german = self._language.lower().startswith("de")
+        variant_label = "Kommandovariante" if is_german else "Command variant"
+        source_label = "Quelle" if is_german else "Source"
+        timings_label = "Timing" if is_german else "Timings"
+        variant_details: list[str] = []
+        for index, command in enumerate(self._pending_variants, start=1):
+            analysis = _command_analysis(command)
+            variant_details.append(
+                f"**{variant_label} {index}**\n\n"
+                f"{rf_analysis.signal_details(analysis, self._language)}\n"
+                f"{source_label}: {command.source}\n"
+                f"{timings_label}: `{rf_analysis.preview_timings(command.data)}`"
+            )
         placeholders = {
             **self._slot_placeholders(),
-            "summary": rf_analysis.signal_details(pending_analysis, self._language),
-            "timings_preview": rf_analysis.preview_timings(pending.data),
-            "source": pending.source,
+            "variant_details": "\n\n".join(variant_details),
+            "variant_count": str(len(self._pending_variants)),
             "test_note": self._test_note,
         }
         self._test_note = ""
@@ -1070,7 +1293,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_test(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Send the pending command once for a live test."""
+        """Send the first selected variant once for a live test."""
         assert self._pending is not None
         device = self._device()
         rf_manager = get_domain_data(self.hass).rf_manager
@@ -1085,12 +1308,13 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_retry(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Discard the pending command.
+        """Discard the selected variants.
 
-        With several captured signals, return to the signal list so another
-        one can be tried; otherwise re-enter the slot menu.
+        With several captured signals, return to the multi-select list so the
+        selection can be changed; otherwise re-enter the slot menu.
         """
         self._pending = None
+        self._pending_variants = []
         if len(self._signals) > 1:
             return await self.async_step_slot_learn_done()
         return await self.async_step_slot_menu()
@@ -1104,10 +1328,15 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_accept(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Store the pending command into the slot and advance."""
+        """Store the selected command variants into the slot and advance."""
         assert self._code is not None and self._pending is not None
-        self._code.commands[self._current_slot_key()] = self._pending
+        slot = self._current_slot_key()
+        self._code.commands[slot] = list(self._pending_variants or [self._pending])
+        get_domain_data(self.hass).rf_manager.reset_command_rotation(
+            self._code.id, slot
+        )
         self._pending = None
+        self._pending_variants = []
         return await self._async_advance_slot()
 
     async def _async_advance_slot(self) -> ConfigFlowResult:
@@ -1202,6 +1431,11 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         if code is None:
             return self.async_abort(reason="no_codes")
         note, self._test_note = self._test_note, ""
+        variant_label = (
+            "Kommandovarianten"
+            if self._language.lower().startswith("de")
+            else "command variants"
+        )
         return self.async_show_menu(
             step_id="code_menu",
             menu_options=[
@@ -1216,7 +1450,12 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
                 "code_name": code.name,
                 "entity_type": code.entity_type,
                 "slots": ", ".join(
-                    slot_label(slot, self._language) for slot in code.commands
+                    (
+                        f"{slot_label(slot, self._language)} ({len(variants)} "
+                        f"{variant_label})"
+                        if len(variants) > 1 else slot_label(slot, self._language)
+                    )
+                    for slot, variants in code.commands.items()
                 )
                 or "—",
                 "enabled": "✅" if code.enabled else "⏸",
@@ -1241,23 +1480,28 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         german = self._language.lower().startswith("de")
         if code.commands:
             blocks: list[str] = []
-            for slot, command in code.commands.items():
-                analysis = {
-                    **command.extra,
-                    "pulse_count": len(command.data),
-                    "base_unit_us": command.pulse_length,
-                    "bit_count": command.extra.get("bit_count")
-                    or len(command.extra.get("bits", ""))
-                    or None,
-                    "tristate": command.extra.get("tristate")
-                    or (command.code if command.protocol == PROTOCOL_TRISTATE else None),
-                }
-                details = rf_analysis.signal_details(analysis, self._language)
-                indented = details.replace("\n", "\n  ")
-                blocks.append(
-                    f"### {slot_label(slot, self._language)}\n  {indented}\n"
-                    f"  **Timings:** `{rf_analysis.preview_timings(command.data)}`"
-                )
+            for slot, variants in code.commands.items():
+                heading = slot_label(slot, self._language)
+                if len(variants) > 1:
+                    count_label = (
+                        "Kommandovarianten"
+                        if german
+                        else "command variants"
+                    )
+                    heading += f" ({len(variants)} {count_label})"
+                lines = [f"### {heading}"]
+                for index, command in enumerate(variants, start=1):
+                    if len(variants) > 1:
+                        lines.append(f"**{index}.**")
+                    lines.append(
+                        rf_analysis.signal_details(
+                            _command_analysis(command), self._language
+                        )
+                    )
+                    lines.append(
+                        f"**Timings:** `{rf_analysis.preview_timings(command.data)}`"
+                    )
+                blocks.append("\n\n".join(lines))
             body = "\n\n".join(blocks)
         else:
             body = "*Noch keine Befehle.*" if german else "*No commands yet.*"
@@ -1296,8 +1540,9 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
                 repeat = user_input.get(CONF_REPEAT)
                 if repeat is not None:
                     code.settings[CONF_REPEAT] = int(repeat)
-                    for command in code.commands.values():
-                        command.repeat = int(repeat)
+                    for variants in code.commands.values():
+                        for command in variants:
+                            command.repeat = int(repeat)
                 get_domain_data(self.hass).device_manager.async_update_code(code)
                 return self._finish()
 
@@ -1378,11 +1623,13 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             slot = user_input["slot"]
             device = self._device()
             rf_manager = get_domain_data(self.hass).rf_manager
-            command = code.commands.get(slot)
+            variants = code.commands.get(slot)
             try:
-                if command is None:
+                if not variants:
                     raise ValueError(slot)
-                await rf_manager.async_send(command, device.transmitter)
+                await rf_manager.async_send_variants(
+                    variants, device.transmitter, code_id=code.id, slot=slot
+                )
             except Exception as err:  # noqa: BLE001 - shown inline
                 self._test_note = f"❌ {err}"
             else:
