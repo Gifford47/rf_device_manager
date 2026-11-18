@@ -218,10 +218,11 @@ polarity is the non-obvious part.
     format dropdown. Core 2026.11+ displays only the selected format's editor
     and settings on one page; earlier supported versions use a two-step
     compatibility form. Both paths share selector builders and the parser.
-    Binary/Tri-state use inline `TextSelector(multiple=True)`; Raw/B0/B1/Pronto
-    use repeatable `ObjectSelector` lists with multiline editors. Pulse length and
-    rc-switch protocol appear only for Binary/Tri-state. Repeat is available
-    for every format; 0/unset still invokes `DEFAULT_SEND_REPEAT`.
+    All formats use the same repeatable `ObjectSelector` list and add action.
+    Binary/Tri-state use single-line editors; Raw/B0/B1/Pronto use multiline
+    editors. Pulse length and rc-switch protocol appear only for Binary/Tri-state.
+    Repeat is available for every format; 0/unset still invokes
+    `DEFAULT_SEND_REPEAT`.
   - **No-receiver guard:** `slot_learn` refreshes `hub.async_discover()` and,
     if no receiver is found, routes to `slot_no_receiver` (warn + retry /
     manual / skip) instead of waiting for a signal that can never arrive.

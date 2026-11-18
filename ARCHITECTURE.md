@@ -80,8 +80,9 @@ Ursprungsformat bleibt zur Anzeige/Bearbeitung erhalten (`protocol`, `code`,
 gespeichert. Ab Core 2026.11 zeigt ein Format-Dropdown den jeweils passenden
 Editor und die benötigten Kodierungseinstellungen auf einer Seite; ältere
 unterstützte Core-Versionen verwenden dafür einen kompatiblen zweistufigen Ablauf.
-Binär-/Tri-State-Varianten nutzen `TextSelector(multiple=True)`; längere
-Raw-/B0/B1-/Pronto-Eingaben nutzen mehrzeilige `ObjectSelector`-Editoren.
+Alle Formate nutzen eine wiederholbare `ObjectSelector`-Liste mit derselben
+Überschrift und Hinzufügen-Aktion. Binär-/Tri-State-Werte bleiben einzeilig;
+Raw-/B0/B1-/Pronto-Eingaben verwenden mehrzeilige Editoren.
 
 ## 3. Module
 
