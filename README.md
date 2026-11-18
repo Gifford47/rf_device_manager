@@ -39,9 +39,9 @@ generic RF device manager.
   testing before saving.
 - **Manual entry**: choose raw timings, **Tasmota/Portisch RfRaw B0/B1**,
   tri-state, binary/rc-switch, or Pronto. Every format supports multiple
-  ordered variants. Binary and tri-state variants use inline multi-value
-  fields; raw/B0/B1/Pronto variants retain multiline editors. On Home
-  Assistant Core 2026.11 and newer, the format dropdown dynamically shows
+  ordered variants in a consistent repeatable list. Binary and tri-state
+  values use single-line editors; raw/B0/B1/Pronto use multiline editors. On
+  Home Assistant Core 2026.11 and newer, the format dropdown dynamically shows
   only the matching editor and relevant encoding settings on one page; older
   supported Core versions use a compatible two-step form.
 - **9 entity types**: switch, light (stepped brightness), fan (speeds,

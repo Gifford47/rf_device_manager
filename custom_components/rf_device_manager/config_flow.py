@@ -248,21 +248,21 @@ def _command_analysis(command: RFCommandData) -> dict[str, Any]:
     }
 
 
-def _manual_variant_selector(input_format: str) -> ObjectSelector | TextSelector:
-    """Build the per-format repeatable variant input.
+def _manual_variant_selector(input_format: str) -> ObjectSelector:
+    """Build one repeatable command-variant list for every manual format.
 
-    Binary and tri-state codes are short single-line strings, so use the
-    native inline multi-text input. Formats with long payloads use the object
-    list editor so each variant opens a multiline text editor.
+    Binary and tri-state values remain single-line; the other formats use
+    multiline editors. A shared ObjectSelector keeps the section heading,
+    add button and list layout consistent across all formats.
     """
-    if input_format in (PROTOCOL_BINARY, PROTOCOL_TRISTATE):
-        return TextSelector(TextSelectorConfig(multiple=True))
-
+    multiline = input_format not in (PROTOCOL_BINARY, PROTOCOL_TRISTATE)
     return ObjectSelector(
         ObjectSelectorConfig(
             fields={
                 "value": {
-                    "selector": TextSelector(TextSelectorConfig(multiline=True)),
+                    "selector": TextSelector(
+                        TextSelectorConfig(multiline=multiline)
+                    ),
                     "required": True,
                 }
             },
@@ -277,8 +277,11 @@ def _manual_dynamic_schema() -> Any:
     """Build the single-page manual form for Core versions with field visibility."""
     fields: dict[Any, Any] = {}
 
-    # Put the selected format's explanation immediately above the format
-    # dropdown. The condition refers to the selector even though it follows.
+    # Show the format selector first, followed by its matching explanation.
+    fields[
+        data_entry_flow.Required(CONF_INPUT_FORMAT, default=PROTOCOL_RAW)
+    ] = _manual_format_selector()
+
     for input_format in _MANUAL_FORMATS:
         visible = {"field": CONF_INPUT_FORMAT, "value": input_format}
         fields[
@@ -286,10 +289,6 @@ def _manual_dynamic_schema() -> Any:
                 f"format_help_{input_format}", visible=visible
             )
         ] = _manual_format_help_selector(input_format)
-
-    fields[
-        data_entry_flow.Required(CONF_INPUT_FORMAT, default=PROTOCOL_RAW)
-    ] = _manual_format_selector()
 
     for input_format in _MANUAL_FORMATS:
         visible = {"field": CONF_INPUT_FORMAT, "value": input_format}
