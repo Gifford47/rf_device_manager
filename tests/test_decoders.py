@@ -344,6 +344,10 @@ check(
     len(pronto_variants) == 2 and pronto_variants[0][0] == pronto_variants[1][0],
     "Manual Pronto: 0000/0100 formats were not parsed equivalently",
 )
+check(
+    [code for _timings, code in pronto_variants] == [PRONTO, PRONTO_0100],
+    "Manual Pronto: original input text was not preserved",
+)
 
 try:
     rf_analysis.parse_manual_variants("binary", [])
