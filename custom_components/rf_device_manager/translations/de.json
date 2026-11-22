@@ -361,19 +361,29 @@
       }
     },
     "manual_format_raw": {
-      "value": "Gib vorzeichenbehaftete Timing-Dauern in Mikrosekunden ein. Mehrzeilige Eingabe wird unterstützt."
+      "options": {
+        "value": "Gib vorzeichenbehaftete Timing-Dauern in Mikrosekunden ein. Mehrzeilige Eingabe wird unterstützt."
+      }
     },
     "manual_format_b0": {
-      "value": "Gib einen vollständigen Tasmota-/Portisch-RfRaw-B0- oder B1-Code ein."
+      "options": {
+        "value": "Gib einen vollständigen Tasmota-/Portisch-RfRaw-B0- oder B1-Code ein."
+      }
     },
     "manual_format_tristate": {
-      "value": "Gib einen PT2262-/EV1527-Code ein, der nur 0, 1 und F enthält."
+      "options": {
+        "value": "Gib einen PT2262-/EV1527-Code ein, der nur 0, 1 und F enthält."
+      }
     },
     "manual_format_binary": {
-      "value": "Gib eine Bitfolge aus 0 und 1 ein."
+      "options": {
+        "value": "Gib eine Bitfolge aus 0 und 1 ein."
+      }
     },
     "manual_format_pronto": {
-      "value": "Gib einen vollständigen Pronto-Hex-Code ein."
+      "options": {
+        "value": "Gib einen vollständigen Pronto-Hex-Code ein."
+      }
     },
     "manual_command_variants": {
       "fields": {

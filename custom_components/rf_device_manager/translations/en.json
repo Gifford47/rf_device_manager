@@ -361,19 +361,29 @@
       }
     },
     "manual_format_raw": {
-      "value": "Enter signed timing durations in microseconds. Multiline input is supported."
+      "options": {
+        "value": "Enter signed timing durations in microseconds. Multiline input is supported."
+      }
     },
     "manual_format_b0": {
-      "value": "Enter a complete Tasmota/Portisch RfRaw B0 or B1 code."
+      "options": {
+        "value": "Enter a complete Tasmota/Portisch RfRaw B0 or B1 code."
+      }
     },
     "manual_format_tristate": {
-      "value": "Enter a PT2262/EV1527-style code using only 0, 1 and F."
+      "options": {
+        "value": "Enter a PT2262/EV1527-style code using only 0, 1 and F."
+      }
     },
     "manual_format_binary": {
-      "value": "Enter a bit string containing only 0 and 1."
+      "options": {
+        "value": "Enter a bit string containing only 0 and 1."
+      }
     },
     "manual_format_pronto": {
-      "value": "Enter a complete Pronto hexadecimal code."
+      "options": {
+        "value": "Enter a complete Pronto hexadecimal code."
+      }
     },
     "manual_command_variants": {
       "fields": {
