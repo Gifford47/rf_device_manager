@@ -45,8 +45,8 @@ async def async_get_config_entry_diagnostics(
                 **code.to_dict(),
                 "rf_data": {
                     "commands": {
-                        slot: _redact_command(command.to_dict())
-                        for slot, command in code.commands.items()
+                        slot: [_redact_command(command.to_dict()) for command in variants]
+                        for slot, variants in code.commands.items()
                     }
                 },
             }

@@ -738,7 +738,8 @@ def parse_manual_variants(
                 code_text, pulse_length=pulse_length, protocol=protocol
             )
         else:  # PROTOCOL_PRONTO
-            timings, _carrier = parse_pronto(raw_value)
+            code_text = raw_value.strip()
+            timings, _carrier = parse_pronto(code_text)
         parsed.append((timings, code_text))
 
     return parsed

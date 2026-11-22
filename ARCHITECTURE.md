@@ -145,16 +145,16 @@ Mehrfachauswahl → stärkste Kandidaten werden in ihrer Erstempfangsreihenfolge
 gespeichert → Test der ersten ausgewählten Variante → nächster Slot → Store/Entities live
 (Coordinator-Diff, kein Reload).
 
-**Empfangen (alle Entities):** Jede Entity registriert die Fingerprints ihrer
-Befehls-Slots beim zentralen `CodeMatcher` (fingerprint→Entity, O(1)-Lookup). Eine
-einzige Hub-Subscription routet empfangene Captures an die passende Entity.
-Der Matcher übergibt auch den Index der passenden Kommandovariante; damit wird
-die nächste Sendeposition synchronisiert. Anschließend passt
-`_on_rf_match(slot, signal)` den Zustand an (Schalter kippt, Cover öffnet,
-Ventilatorstufe ändert sich …) + Bus-Event `rf_device_manager_code_received`. So
-werden auch externe Auslösungen (Original-Fernbedienung) in HA sichtbar;
-sensor/binary_sensor nutzen denselben Pfad als primäre Zustandsquelle (Binary
-Sensor optional mit Auto-Off `off_delay`).
+**Empfangen (alle Entities):** Jede Entity registriert die Fingerprints und
+Bitfolgen ihrer Befehlsvarianten beim zentralen `CodeMatcher`. Eine einzige
+Hub-Subscription vergleicht eingehende Captures mit den registrierten Varianten
+und wählt pro Entity den besten Treffer. Der Matcher übergibt auch den Index der
+passenden Kommandovariante; damit wird die nächste Sendeposition synchronisiert.
+Anschließend passt `_on_rf_match(slot, signal)` den Zustand an (Schalter kippt,
+Cover öffnet, Ventilatorstufe ändert sich …) und feuert das Bus-Event
+`rf_device_manager_code_received`. So werden auch externe Auslösungen
+(Original-Fernbedienung) in HA sichtbar; sensor/binary_sensor nutzen denselben
+Pfad als primäre Zustandsquelle (Binary Sensor optional mit Auto-Off `off_delay`).
 
 **Reaktionszeit:** Sende-Aktionen schreiben den optimistischen Zustand *vor* dem
 Await der Übertragung → sofortiges UI-Feedback.
