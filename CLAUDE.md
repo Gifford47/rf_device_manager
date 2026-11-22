@@ -136,10 +136,11 @@ polarity is the non-obvious part.
   subscriber and detach on last. ESPHome runtime-data connection callbacks
   invalidate and re-establish receiver subscriptions on disconnect/reconnect;
   a 30s maintenance scan notices newly loaded ESPHome entries and retries failed
-  discovery/subscription attempts. Successfully discovered receiver metadata is
-  cached for the current connection, so a healthy node is not re-enumerated on
-  every scan. `async_discover()` remains an explicit refresh for the learn UI
-  and diagnostics.
+  discovery/subscription attempts. Receiver metadata (including empty
+  results) is cached per ESPHome connection and reused by maintenance,
+  `async_discover()`, the learn UI and diagnostics. ESPHome disconnect callbacks
+  invalidate the cache even while the hub is stopped; failed discovery is not
+  cached and is retried.
 - **`CodeMatcher`** — registered slots `(slot, fingerprint, bits, callback)`;
   one hub subscription routes each received capture to the matching entities.
   Matching is **tolerant**: exact fingerprint = distance 0, else decoded-bit
