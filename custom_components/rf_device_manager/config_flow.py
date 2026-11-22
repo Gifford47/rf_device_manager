@@ -193,7 +193,7 @@ def _manual_format_help_selector(input_format: str) -> ConstantSelector:
     return ConstantSelector(
         ConstantSelectorConfig(
             value=input_format,
-            translation_key=f"manual_format_{input_format}",
+            translation_key=f"manual_format_{input_format}.options",
         )
     )
 
