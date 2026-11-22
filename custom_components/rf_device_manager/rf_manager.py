@@ -672,6 +672,7 @@ class RFManager:
         *,
         frequency: int | None = None,
         repeat: int | None = None,
+        log_context: str | None = None,
     ) -> None:
         """Send a stored command through a ``radio_frequency`` transmitter.
 
@@ -707,13 +708,23 @@ class RFManager:
             timings=timings,
             repeat_count=effective_repeat,
         )
-        _LOGGER.debug(
-            "Sending %d pulses at %d Hz via %s (repeat=%d)",
-            len(timings),
-            rf_command.frequency,
-            transmitter,
-            rf_command.repeat_count,
-        )
+        if log_context:
+            _LOGGER.debug(
+                "Sending RF command for %s: %d pulses at %d Hz via %s (repeat=%d)",
+                log_context,
+                len(timings),
+                rf_command.frequency,
+                transmitter,
+                rf_command.repeat_count,
+            )
+        else:
+            _LOGGER.debug(
+                "Sending %d pulses at %d Hz via %s (repeat=%d)",
+                len(timings),
+                rf_command.frequency,
+                transmitter,
+                rf_command.repeat_count,
+            )
         await rf_async_send_command(self._hass, transmitter, rf_command)
 
     async def async_send_variants(
@@ -723,6 +734,7 @@ class RFManager:
         *,
         code_id: str,
         slot: str,
+        context: str,
         repeat: int | None = None,
     ) -> None:
         """Send the next command variant and advance its in-memory rotation."""
@@ -733,7 +745,14 @@ class RFManager:
         # Advance before awaiting transmission so concurrent sends reserve
         # different variants rather than racing on the same current index.
         index = self._variant_rotation.next_index(code_id, slot, len(variants))
-        await self.async_send(variants[index], transmitter, repeat=repeat)
+        command = variants[index]
+        log_context = (
+            f"{context}, slot {slot}, variant {index + 1}/{len(variants)}, "
+            f"fingerprint {command.fingerprint or 'n/a'}"
+        )
+        await self.async_send(
+            command, transmitter, repeat=repeat, log_context=log_context
+        )
 
     @callback
     def sync_variant(
