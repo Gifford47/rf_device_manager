@@ -1294,10 +1294,19 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Send the first selected variant once for a live test."""
         assert self._pending is not None
+        assert self._code is not None
         device = self._device()
         rf_manager = get_domain_data(self.hass).rf_manager
+        variant_count = len(self._pending_variants) or 1
+        log_context = (
+            f"RF code {self._code.name!r}, slot {self._current_slot_key()}, "
+            f"variant 1/{variant_count}, "
+            f"fingerprint {self._pending.fingerprint or 'n/a'} (learn test)"
+        )
         try:
-            await rf_manager.async_send(self._pending, device.transmitter)
+            await rf_manager.async_send(
+                self._pending, device.transmitter, log_context=log_context
+            )
         except Exception as err:  # noqa: BLE001 - shown inline, flow continues
             self._test_note = f"❌ {err}"
         else:
@@ -1627,7 +1636,11 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
                 if not variants:
                     raise ValueError(slot)
                 await rf_manager.async_send_variants(
-                    variants, device.transmitter, code_id=code.id, slot=slot
+                    variants,
+                    device.transmitter,
+                    code_id=code.id,
+                    slot=slot,
+                    context=f"RF code {code.name!r} (code test)",
                 )
             except Exception as err:  # noqa: BLE001 - shown inline
                 self._test_note = f"❌ {err}"

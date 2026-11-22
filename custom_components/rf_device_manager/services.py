@@ -145,6 +145,10 @@ async def _async_handle_send_code(call: ServiceCall) -> None:
         device.transmitter,
         code_id=code.id,
         slot=slot,
+        context=(
+            f"RF device {device.name!r}, code {code.name!r} "
+            "(send_code service)"
+        ),
         repeat=call.data.get(ATTR_REPEAT),
     )
 

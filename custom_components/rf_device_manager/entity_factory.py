@@ -261,11 +261,30 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
             return  # a repeated frame of the same press
         self._recv_debounce[slot] = now
+        variants = code.commands.get(slot, [])
+        variant_count = len(variants)
         get_domain_data(self.hass).rf_manager.sync_variant(
-            code.id, slot, variant_index, len(code.commands.get(slot, []))
+            code.id, slot, variant_index, variant_count
         )
+        if variant_count > 1:
+            next_variant = (variant_index + 1) % variant_count
+            sync_detail = (
+                f"next send synchronized to variant "
+                f"{next_variant + 1}/{variant_count}"
+            )
+        elif variant_count == 1:
+            sync_detail = "single variant; no rotation needed"
+        else:
+            sync_detail = "no variants remain; rotation not synchronized"
         _LOGGER.debug(
-            "RF match on %s: slot %s (%s)", self.entity_id, slot, signal.fingerprint
+            "Received RF command for entity %s, slot %s: variant %d/%d, "
+            "fingerprint %s; %s",
+            self.entity_id,
+            slot,
+            variant_index + 1,
+            variant_count,
+            signal.fingerprint or "n/a",
+            sync_detail,
         )
         self.hass.bus.async_fire(
             EVENT_CODE_RECEIVED,
@@ -341,6 +360,7 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
             self.rf_device.transmitter,
             code_id=code.id,
             slot=slot,
+            context=f"entity {self.entity_id}",
             repeat=repeat,
         )
 
