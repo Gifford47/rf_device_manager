@@ -42,10 +42,11 @@ from .decoders import (  # noqa: F401  (re-exported for flows/services)
     encoding_label,
 )
 
-# Splitting captures into frames: a space terminates a frame when it clearly
-# exceeds the regular pulse population (95th percentile based, with a floor).
-# Real-world sync gaps can be as short as ~2.5 ms (e.g. EV1527 remotes).
-_FRAME_GAP_MIN_US = 2_400
+# Frame splitting uses an adaptive threshold with an absolute floor:
+# max(_FRAME_GAP_MIN_US, _FRAME_GAP_FACTOR * P95(all pulse durations)).
+# The 2,000 µs floor admits RC-Switch P4's nominal 2.28 ms sync LOW;
+# the adaptive term protects longer in-frame spaces, e.g. P8's 3.2 ms data LOW.
+_FRAME_GAP_MIN_US = 2_000
 _FRAME_GAP_FACTOR = 1.7
 
 # Quantization limits
