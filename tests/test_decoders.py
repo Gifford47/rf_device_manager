@@ -592,6 +592,37 @@ check(
     all(frame[-1] == -26_000 for frame in protocol_8_frames),
     "Synthetic Protocol 8: expected each frame to end at its 26,000 µs sync LOW",
 )
+
+# Protocol 8 mark-width decoding regression coverage from PR #4.
+# RC-Switch Protocol 8 maps the longer mark to bit 0. Verify recognition,
+# polarity, and reported base pulse length across custom pulse lengths.
+P8_BINARY = "101010101010101010101010"
+P8_TRISTATE = "0F1F00110F1F"
+for pulse_length in (120, 200, 250, 400):
+    for timings, expected_bits in (
+        (
+            rf_analysis.encode_binary(
+                P8_BINARY, pulse_length=pulse_length, protocol=8
+            ),
+            P8_BINARY,
+        ),
+        (
+            rf_analysis.encode_tristate(
+                P8_TRISTATE, pulse_length=pulse_length, protocol=8
+            ),
+            "".join(rf_analysis.TRISTATE_TO_BITS[s] for s in P8_TRISTATE),
+        ),
+    ):
+        result = rf_analysis.analyze(timings)
+        check(
+            result.get("encoding") == "mark_width"
+            and result.get("bits") == expected_bits
+            and result.get("protocol_guess") == 8
+            and result.get("pulse_length") == pulse_length,
+            f"RC-Switch P8 at T={pulse_length}: unexpected decode {result!r}",
+        )
+
+
 if failures:
     print("\nFAILURES:")
     print("\n".join(failures))

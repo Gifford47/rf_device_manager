@@ -84,8 +84,8 @@ the `DECODERS` chain **in order**; first structural match wins:
 | Decoder | Structure | Examples |
 |---|---|---|
 | `space_distance` | constant mark, short/long space | EV1527, PT2262 |
-| `mark_width` | constant space, short/long mark | SIRC-style |
-| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–5, P7, P8 (+ guess) |
+| `mark_width` | constant space, short/long mark | SIRC-style, rc-switch P8 |
+| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–5, P7 (+ guess) |
 | `manchester` | every bit is a level transition | Oregon, some fans |
 
 Detection is **structural, not a protocol database** — unknown remotes decode as

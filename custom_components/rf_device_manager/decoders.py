@@ -252,6 +252,34 @@ def _decode_space_distance(context: FrameContext) -> DecodedFrame | None:
     )
 
 
+def _guess_mark_width_protocol(
+    context: FrameContext, short_mean: float, long_mean: float
+) -> int | None:
+    """Identify a mark-width rc-switch profile from its timing ratios.
+
+    Protocol 8 has constant 16T spaces, with 3T marks for bit 1 and 7T
+    marks for bit 0. Match against the protocol table rather than assuming
+    that a long mark always represents a one. Deriving T from the spaces
+    also keeps the match valid when a custom pulse length is used.
+    """
+    space_mean = sum(context.spaces) / len(context.spaces)
+    for protocol_id, spec in RC_PROTOCOLS.items():
+        zero_high, zero_low = spec["zero"]
+        one_high, one_low = spec["one"]
+        if zero_low != one_low or zero_high == one_high:
+            continue
+
+        pulse_length = space_mean / zero_low
+        expected_short = min(zero_high, one_high) * pulse_length
+        expected_long = max(zero_high, one_high) * pulse_length
+        if (
+            abs(short_mean - expected_short) <= expected_short * 0.30
+            and abs(long_mean - expected_long) <= expected_long * 0.30
+        ):
+            return protocol_id
+    return None
+
+
 def _decode_mark_width(context: FrameContext) -> DecodedFrame | None:
     """Pulse-width coding: constant space, data in the mark length.
 
@@ -260,19 +288,41 @@ def _decode_mark_width(context: FrameContext) -> DecodedFrame | None:
         bit 0:  ▔▔▁▁          short mark, space
         bit 1:  ▔▔▔▔▔▔▁▁      long mark, space
 
-    Matches when all spaces sit in one timing cluster and the marks form a
-    clean short/long population.
+    RC-switch Protocol 8 also uses mark-width coding, but its protocol
+    definition maps the longer mark to zero. Recognize that profile from
+    its timing ratios and use the protocol table's bit mapping.
     """
     if not _is_roughly_constant(context.spaces):
         return None
     split = _split_bimodal(context.marks)
     if split is None:
         return None
-    short_mean, _long, is_long = split
+    short_mean, long_mean, is_long = split
+    protocol_guess = _guess_mark_width_protocol(context, short_mean, long_mean)
+
+    if protocol_guess is None:
+        bits = "".join("1" if flag else "0" for flag in is_long)
+    else:
+        zero_high = RC_PROTOCOLS[protocol_guess]["zero"][0]
+        one_high = RC_PROTOCOLS[protocol_guess]["one"][0]
+        long_mark_is_zero = zero_high > one_high
+        bits = "".join(
+            "0" if flag == long_mark_is_zero else "1" for flag in is_long
+        )
+
+    pulse_length = (
+        round(
+            sum(context.spaces) / len(context.spaces)
+            / RC_PROTOCOLS[protocol_guess]["zero"][1]
+        )
+        if protocol_guess is not None
+        else round(short_mean)
+    )
     return DecodedFrame(
         encoding="mark_width",
-        bits="".join("1" if flag else "0" for flag in is_long),
-        pulse_length=round(short_mean),
+        bits=bits,
+        pulse_length=pulse_length,
+        protocol_guess=protocol_guess,
     )
 
 
