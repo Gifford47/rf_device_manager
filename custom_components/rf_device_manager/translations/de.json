@@ -68,6 +68,7 @@
         "description": "Verwalte Einstellungen und RF-Codes dieses Geräts.",
         "menu_options": {
           "device_settings": "Geräteeinstellungen",
+          "add_buttons": "Tasten hinzufügen (mehrere auf einmal anlernen)",
           "add_code": "Neuen RF-Code hinzufügen",
           "manage_codes": "RF-Codes verwalten"
         }
@@ -93,6 +94,18 @@
           "entity_type": "Entitätstyp",
           "icon": "Icon",
           "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        }
+      },
+      "add_buttons": {
+        "title": "Tasten hinzufügen",
+        "description": "Ein Tastenname pro Zeile (oder kommagetrennt). Jeder wird zu einer zustandslosen Tasten-Entität auf **{device_name}**.\n\nDanach wartet der Assistent nacheinander auf jede Taste: auf der echten Fernbedienung drücken, Ergebnis prüfen, speichern – dann lauscht er auf die nächste. Tasten werden sofort gespeichert.",
+        "data": {
+          "button_names": "Tastennamen",
+          "icon": "Symbol (alle Tasten)",
+          "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        },
+        "data_description": {
+          "button_names": "Zum Beispiel:\nAus\nStufe 1\nStufe 2"
         }
       },
       "type_settings": {
@@ -173,7 +186,7 @@
         "data_description": {
           "pulse_length": "Basis-Pulsdauer zur Erzeugung der Timings. Leer lassen, um den Standard des gewählten Protokolls zu verwenden.",
           "rc_protocol": "Legt das rc-switch-Timingmuster für Binär- und Tri-State-Eingaben fest (Protokolle 1–5, 7 und 8). Die Trägerfrequenz wird damit nicht festgelegt.",
-          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 verwendet das Standard-Wiederholungsverhalten."
+          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 sendet den Befehl genau einmal."
         }
       },
       "slot_confirm": {
@@ -260,8 +273,12 @@
         "data_description": {
           "pulse_length": "Basis-Pulsdauer zur Erzeugung der Timings. Leer lassen, um den Standard des gewählten Protokolls zu verwenden.",
           "rc_protocol": "Legt das rc-switch-Timingmuster für Binär- und Tri-State-Eingaben fest (Protokolle 1–5, 7 und 8). Die Trägerfrequenz wird damit nicht festgelegt.",
-          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 verwendet das Standard-Wiederholungsverhalten."
+          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 sendet den Befehl genau einmal."
         }
+      },
+      "bulk_done": {
+        "title": "Tasten hinzugefügt",
+        "description": "{saved_count} von {total} Tasten hinzugefügt: {saved}\n\nÜbersprungen: {skipped}"
       }
     },
     "progress": {
@@ -285,7 +302,9 @@
       "frequency_required": "Bitte eine eigene Frequenz in Hz eingeben.",
       "select_signal_required": "Wähle mindestens ein empfangenes Signal aus.",
       "manual_variant_required": "Füge mindestens eine nicht leere Kommandovariante hinzu und entferne leere Einträge.",
-      "invalid_input_format": "Wähle ein unterstütztes RF-Datenformat."
+      "invalid_input_format": "Wähle ein unterstütztes RF-Datenformat.",
+      "invalid_button_names": "Bitte mindestens einen Tastennamen eingeben.",
+      "duplicate_button_names": "Tastennamen müssen auf diesem Gerät eindeutig sein (inkl. vorhandener Codes)."
     },
     "abort": {
       "no_codes": "Dieses Gerät hat noch keine RF-Codes."
