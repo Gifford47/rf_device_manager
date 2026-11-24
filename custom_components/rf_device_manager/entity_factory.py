@@ -260,14 +260,19 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         now = self.hass.loop.time()
         if now < self._suppress_receive_until:
             return  # our own transmission echoed back on the receiver
-        if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
-            return  # a repeated frame of the same press
-        self._recv_debounce[slot] = now
         variants = code.commands.get(slot, [])
         variant_count = len(variants)
-        get_domain_data(self.hass).rf_manager.sync_variant(
-            code.id, slot, variant_index, variant_count
-        )
+        rf_manager = get_domain_data(self.hass).rf_manager
+        if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
+            # A repeated frame of the same press: no new event or state. The
+            # rotation still follows the variant just received, so a quick
+            # double press of a rotating remote does not leave the next send
+            # one variant behind.
+            if variant_count > 1:
+                rf_manager.sync_variant(code.id, slot, variant_index, variant_count)
+            return
+        self._recv_debounce[slot] = now
+        rf_manager.sync_variant(code.id, slot, variant_index, variant_count)
         if variant_count > 1:
             next_variant = (variant_index + 1) % variant_count
             sync_detail = (

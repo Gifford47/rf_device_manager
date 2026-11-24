@@ -130,6 +130,26 @@ async def test_every_received_variant_is_recognized_and_syncs_next_send(
     assert sent_hex(sent[-1]) == GIOLA_SPEED_1[2]
 
 
+async def test_quick_double_press_keeps_rotation_in_step(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """A second variant inside the debounce window still syncs the rotation."""
+    await setup_device(
+        hass, hass_storage, {"speed1": _button("speed1", "Speed 1", GIOLA_SPEED_1)}
+    )
+    events = []
+    hass.bus.async_listen(EVENT_CODE_RECEIVED, callback(lambda event: events.append(event)))
+
+    # Real debounce (no_receive_guards not used): both presses land in 1 s.
+    receive(hass, p8_timings(GIOLA_SPEED_1[0]))
+    receive(hass, p8_timings(GIOLA_SPEED_1[1]))
+    await hass.async_block_till_done()
+    assert len(events) == 1  # repeated frames still fire only once
+
+    await _press(hass, entity_id_for(hass, "button", "speed1"))
+    assert [sent_hex(timings) for timings in sent] == [GIOLA_SPEED_1[2]]
+
+
 async def test_received_variant_fires_only_its_own_button(
     hass: HomeAssistant, hass_storage, transmitter, sent, no_receive_guards
 ) -> None:
