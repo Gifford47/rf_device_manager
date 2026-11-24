@@ -3,7 +3,7 @@
 All notable changes to RF Device Manager. Versions follow the `version` in
 `custom_components/rf_device_manager/manifest.json`.
 
-## 1.2.0 (unreleased)
+## 1.2.0 (2026-11-24)
 
 ### ⚠️ Upgrade notes — read before updating
 
