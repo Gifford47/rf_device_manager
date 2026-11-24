@@ -242,6 +242,9 @@
           "description": "Beschreibung",
           "icon": "Icon",
           "repeat": "Wiederholungen (gilt für alle Befehle)"
+        },
+        "data_description": {
+          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten, für alle Befehle dieses Codes. Leer lassen, um den Gerätestandard zu verwenden; 0 sendet jeden Befehl genau einmal."
         }
       },
       "code_relearn": {

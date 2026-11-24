@@ -1740,12 +1740,18 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
                     code.settings[CONF_ICON] = icon
                 else:
                     code.settings.pop(CONF_ICON, None)
-                repeat = user_input.get(CONF_REPEAT)
-                if repeat is not None:
-                    code.settings[CONF_REPEAT] = int(repeat)
+                # The field is prefilled with the current value, so an empty
+                # field means "use the device default" (as in add_code).
+                # Like before, the value applies to all commands of the code.
+                default_repeat = self._device().default_repeat
+                old_repeat = int(code.settings.get(CONF_REPEAT, default_repeat))
+                repeat_raw = user_input.get(CONF_REPEAT)
+                repeat = int(repeat_raw) if repeat_raw is not None else default_repeat
+                code.settings[CONF_REPEAT] = repeat
+                if repeat_raw is not None or repeat != old_repeat:
                     for variants in code.commands.values():
                         for command in variants:
-                            command.repeat = int(repeat)
+                            command.repeat = repeat
                 get_domain_data(self.hass).device_manager.async_update_code(code)
                 return self._finish()
 

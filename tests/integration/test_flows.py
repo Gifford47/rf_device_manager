@@ -389,6 +389,42 @@ async def test_relearn_timeout_offers_skip_and_keeps_the_command(
     assert [command.to_dict() for command in code.commands["on"]] == before
 
 
+async def test_code_edit_with_empty_repeat_uses_the_device_default(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """Clearing the prefilled repeat field falls back to the device default."""
+    entry = await setup_device(hass, hass_storage, _switch_code(repeat=3))
+    result = await _open_code_menu(hass, entry)
+    result = await _menu(hass, result["flow_id"], "code_edit")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"name": "Power", "description": ""}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    code = get_domain_data(hass).store.async_get_code("power")
+    assert code is not None
+    assert code.settings["repeat"] == 7  # device default of the test device
+    assert {cmd.repeat for variants in code.commands.values() for cmd in variants} == {7}
+
+
+async def test_code_edit_repeat_applies_to_all_commands(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """An entered repeat value is applied to every command (field label)."""
+    entry = await setup_device(hass, hass_storage, _switch_code(repeat=3))
+    result = await _open_code_menu(hass, entry)
+    result = await _menu(hass, result["flow_id"], "code_edit")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"name": "Power", "description": "", "repeat": 0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+    code = get_domain_data(hass).store.async_get_code("power")
+    assert code is not None
+    assert code.settings["repeat"] == 0
+    assert {cmd.repeat for variants in code.commands.values() for cmd in variants} == {0}
+
+
 async def test_device_settings_round_trip_rotation_option(
     hass: HomeAssistant, hass_storage, transmitter, sent
 ) -> None:
