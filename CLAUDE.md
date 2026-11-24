@@ -192,10 +192,15 @@ from a real Sonoff Bridge code, see the B0 test).
   = 7 → 8 frames on air), then calls the core helper.
 - **`async_send_variants()`** — picks the next variant via `CommandRotation`
   (advanced *before* awaiting so concurrent sends reserve different variants),
-  applies the sibling reset, schedules a rotation save, sends.
+  sends, then applies the sibling reset and schedules a rotation save. **A
+  failed send rolls the rotation back** (`CommandRotation.rollback`, only if
+  nothing moved it on meanwhile) and resets no siblings: the variant never
+  went on air, and skipping it would make a two-variant remote repeat the
+  code its receiver last accepted.
 - **`sync_variant()`** — after a matched physical-remote reception (past the
-  self-echo/debounce guards) the next send uses the variant *after* the
-  received one.
+  self-echo guard) the next send uses the variant *after* the received one.
+  Receptions swallowed by the debounce still sync multi-variant slots, so a
+  quick double press keeps the rotation in step.
 - **Sibling reset** — device option `rotation_reset_on_other`: every send or
   reception of one (code, slot) resets the rotation of all *other* commands of
   the device (`CommandRotation.reset_others`; device grouping is resolved by
@@ -240,7 +245,9 @@ from a real Sonoff Bridge code, see the B0 test).
   `_command(slot)` returns the *first* variant (for "is this slot configured"
   checks only).
 - **Receiving:** the base registers all variants with the matcher on add and
-  on every coordinator update. `_handle_received(slot, signal, variant_index)`
+  on every coordinator update (new registration first, then the old one is
+  dropped, so the matcher never runs empty and the receiver hub is not
+  restarted on edits). `_handle_received(slot, signal, variant_index)`
   applies self-echo suppression (`SELF_ECHO_SUPPRESS_S`) and per-slot debounce
   (`RECV_DEBOUNCE_S`), syncs the rotation, fires
   `rf_device_manager_code_received` and calls `_on_rf_match(slot, signal)`.
@@ -254,7 +261,8 @@ from a real Sonoff Bridge code, see the B0 test).
 ## 8. Config/Options flow (config_flow.py)
 
 - Config flow: create / duplicate / reconfigure a device. The shared device
-  schema includes `rotation_reset_on_other`.
+  schema includes `rotation_reset_on_other`. Reconfigure has no `enabled`
+  field and keeps the entry's current value.
 - Options flow (`RFDeviceManagerOptionsFlow`) is the management UI: device
   settings, add code, **add buttons** (bulk), manage codes (view/edit/relearn/
   test/toggle/delete). The options menu does **not** run receiver discovery;
@@ -281,7 +289,8 @@ from a real Sonoff Bridge code, see the B0 test).
 
 ## 9. Services (services.py)
 
-`send_code` (stored command by device+code+slot, rotates variants),
+`send_code` (stored command by device+code+slot, rotates variants; refuses
+disabled codes/devices),
 `send_raw` (ad-hoc raw/B0/tri-state/binary/Pronto; `repeat` default 7),
 `learn_code` (returns captured signals as response data).
 

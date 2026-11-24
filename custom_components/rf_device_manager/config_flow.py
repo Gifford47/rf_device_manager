@@ -1477,7 +1477,10 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_test(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Send the first selected variant once for a live test."""
+        """Send the first selected variant for a live test.
+
+        Uses the variant's repeat setting, exactly like a later real send.
+        """
         assert self._pending is not None
         assert self._code is not None
         device = self._device()
