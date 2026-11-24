@@ -319,15 +319,20 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         """Self-remove when deleted; re-sync matcher and refresh otherwise.
 
         Re-registering on every coordinator update keeps the matcher in sync
-        after a command is (re-)learned, edited or removed.
+        after a command is (re-)learned, edited or removed. The new
+        registration is added before the old one is dropped, so the matcher
+        never runs empty in between - that would stop and restart the
+        receiver hub (and its ESPHome subscriptions) on every edit.
         """
         if self.code is None:
             if not self._removing:
                 self._removing = True
                 self.hass.async_create_task(self.async_remove(force_remove=True))
             return
-        self._async_unregister_matcher()
+        old_unsub, self._matcher_unsub = self._matcher_unsub, None
         self._async_register_matcher()
+        if old_unsub is not None:
+            old_unsub()
         super()._handle_coordinator_update()
 
     # ------------------------------------------------------------------
