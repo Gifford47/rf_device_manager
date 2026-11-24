@@ -69,6 +69,42 @@ class CommandRotationTests(unittest.TestCase):
         self.assertEqual(self.rotation.peek_index("code", "on", 3), 1)
         self.assertEqual(self.rotation.next_index("code", "on", 3), 1)
 
+    def test_rollback_reuses_the_failed_variant(self) -> None:
+        self.assertEqual(self.rotation.next_index("code", "on", 2), 0)
+        failed = self.rotation.next_index("code", "on", 2)
+        self.assertTrue(self.rotation.rollback("code", "on", failed, 2))
+        self.assertEqual(self.rotation.next_index("code", "on", 2), failed)
+
+    def test_rollback_of_first_variant_restores_the_default_state(self) -> None:
+        failed = self.rotation.next_index("code", "on", 3)
+        self.assertTrue(self.rotation.rollback("code", "on", failed, 3))
+        self.assertEqual(self.rotation.to_dict(), {})
+        self.assertEqual(self.rotation.next_index("code", "on", 3), 0)
+
+    def test_rollback_after_wrap_around(self) -> None:
+        for _ in range(2):
+            self.rotation.next_index("code", "on", 3)
+        failed = self.rotation.next_index("code", "on", 3)  # last one, wraps to 0
+        self.assertEqual(failed, 2)
+        self.assertTrue(self.rotation.rollback("code", "on", failed, 3))
+        self.assertEqual(self.rotation.next_index("code", "on", 3), 2)
+
+    def test_rollback_keeps_rotation_moved_on_in_the_meantime(self) -> None:
+        failed = self.rotation.next_index("code", "on", 4)
+        self.rotation.next_index("code", "on", 4)  # a concurrent send
+        self.assertFalse(self.rotation.rollback("code", "on", failed, 4))
+        self.assertEqual(self.rotation.peek_index("code", "on", 4), 2)
+        failed = self.rotation.next_index("code", "on", 4)
+        self.rotation.sync_after_receive("code", "on", 0, 4)  # a remote press
+        self.assertFalse(self.rotation.rollback("code", "on", failed, 4))
+        self.assertEqual(self.rotation.peek_index("code", "on", 4), 1)
+
+    def test_rollback_ignores_single_variants_and_invalid_indices(self) -> None:
+        self.assertFalse(self.rotation.rollback("code", "on", 0, 1))
+        self.rotation.next_index("code", "on", 3)
+        self.assertFalse(self.rotation.rollback("code", "on", 7, 3))
+        self.assertEqual(self.rotation.peek_index("code", "on", 3), 1)
+
     def test_reset_others_keeps_only_the_active_command(self) -> None:
         for code_id, slot in (("a", "s1"), ("a", "s2"), ("b", "on"), ("x", "on")):
             self.rotation.next_index(code_id, slot, 4)
