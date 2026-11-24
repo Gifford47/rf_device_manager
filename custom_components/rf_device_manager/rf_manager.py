@@ -833,11 +833,15 @@ class ReceiverHub:
                 return
         else:
             return
-        frequency = event.data.get("frequency")
+        try:
+            frequency = int(event.data.get("frequency") or 0) or None
+        except (TypeError, ValueError):
+            # The frequency is only metadata; keep the capture itself.
+            frequency = None
         self._async_dispatch(
             timings,
-            source=event.data.get("source", "event"),
-            frequency=int(frequency) if frequency else None,
+            source=str(event.data.get("source", "event")),
+            frequency=frequency,
         )
 
     @callback
