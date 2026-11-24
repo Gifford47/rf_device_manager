@@ -623,6 +623,141 @@ for pulse_length in (120, 200, 250, 400):
             f"RC-Switch P8 at T={pulse_length}: unexpected decode {result!r}",
         )
 
+# ---------------------------------------------------------------------------
+# 10. Golden fingerprints. Fingerprints are the receive-matching key of every
+#     stored code. If this check fails, a decoder/analysis change altered how
+#     existing captures decode: bump rf_analysis.DECODER_REVISION (stored
+#     commands are then re-decoded on the next start), document the bump next
+#     to the constant, and update these expectations in the same commit.
+# ---------------------------------------------------------------------------
+
+GOLDEN_REVISION = 2
+GOLDEN_BITS = "000101000111000100001001"
+GOLDEN_FINGERPRINTS = {
+    "EV1527 real capture": (EV1527_A, "63b:1467f3f72cfc"),
+    "raw fallback (noise)": (NOISE, "22:30cf14619cf0"),
+    "Manchester": (
+        build_manchester(MANCHESTER_BITS, 500, 0.08, 1),
+        "24b:099bcd328aa5",
+    ),
+    "rc-switch P1 tri-state": (
+        rf_analysis.encode_tristate("0FF0F0FF0001", protocol=1) * 4,
+        "24b:4c8ab672c165",
+    ),
+    **{
+        f"rc-switch P{proto} binary": (
+            rf_analysis.encode_binary(GOLDEN_BITS, protocol=proto) * 4,
+            "24b:fb4b654009f4",
+        )
+        for proto in (1, 2, 3, 4, 5, 7, 8)
+    },
+}
+check(
+    rf_analysis.DECODER_REVISION == GOLDEN_REVISION,
+    f"DECODER_REVISION is {rf_analysis.DECODER_REVISION}, golden expectations "
+    f"are for {GOLDEN_REVISION}: update GOLDEN_REVISION with the new values",
+)
+for label, (timings, expected) in GOLDEN_FINGERPRINTS.items():
+    actual = rf_analysis.analyze(timings)["fingerprint"]
+    check(
+        actual == expected,
+        f"Golden fingerprint changed for {label}: {expected} -> {actual}. "
+        "Bump rf_analysis.DECODER_REVISION and update the golden values.",
+    )
+
+# ---------------------------------------------------------------------------
+# 11. Rotating-code remote (issue #2): the Giola fan sends one of four 24-bit
+#     rc-switch P8 codes per press of "Speed 1". Four presses in one learning
+#     session must yield all four codes, in press order, all preselected,
+#     while one-off noise and a corrupted reception stay unselected.
+# ---------------------------------------------------------------------------
+
+
+class _Capture:
+    """Minimal LearnSession capture (received_at + analysis)."""
+
+    def __init__(self, timings, received_at, times_seen):
+        self.received_at = received_at
+        self.analysis = rf_analysis.analyze(timings)
+        self.analysis["times_seen"] = times_seen
+
+
+GIOLA_SPEED_1 = ["0x147109", "0x17720A", "0x16730B", "0x157008"]
+giola_bits = [format(int(code, 16), "024b") for code in GIOLA_SPEED_1]
+captures = []
+for press, bits in enumerate(giola_bits):
+    captures.append(
+        _Capture(rf_analysis.encode_binary(bits, protocol=8) * 6, press * 1.0, 11)
+    )
+# Interference before the second press and a corrupted frame (one bit
+# flipped) of the third press; each received only once.
+captures.insert(1, _Capture(NOISE, 0.5, 1))
+corrupted = giola_bits[2][:-1] + ("0" if giola_bits[2][-1] == "1" else "1")
+captures.append(_Capture(rf_analysis.encode_binary(corrupted, protocol=8), 2.2, 1))
+
+learned = rf_analysis.cluster_learn_signals(captures, max_signals=8)
+learned_hex = [c.analysis.get("hex") for c in learned]
+preselected = rf_analysis.preselected_signal_indices([c.analysis for c in learned])
+chosen = [learned[i].analysis.get("hex", "").upper().replace("0X", "0x") for i in preselected]
+check(
+    chosen == GIOLA_SPEED_1,
+    f"Rotating remote: expected all four codes in press order, got {chosen} "
+    f"(candidates {learned_hex})",
+)
+check(
+    len(learned) == 6 and len(preselected) == 4,
+    f"Rotating remote: expected 6 candidates / 4 preselected, got "
+    f"{len(learned)} / {len(preselected)}",
+)
+# Sibling variants differ by only 3-6 bits; each must keep its own fingerprint.
+check(
+    len({learned[i].analysis["fingerprint"] for i in preselected}) == 4,
+    "Rotating remote: variant fingerprints collide",
+)
+
+# ---------------------------------------------------------------------------
+# 12. Preselection edge cases.
+# ---------------------------------------------------------------------------
+
+check(rf_analysis.preselected_signal_indices([]) == [], "Preselect: empty")
+check(
+    rf_analysis.preselected_signal_indices([{"times_seen": 1}, {"times_seen": 1}])
+    == [0],
+    "Preselect: undecodable one-off captures -> first only",
+)
+# One capture per press (large receiver idle): every candidate is seen once.
+# Same-shaped decodes are preselected, a different encoding/length is not.
+one_per_press = [
+    rf_analysis.analyze(rf_analysis.encode_binary(bits, protocol=8))
+    for bits in giola_bits
+]
+one_per_press.insert(2, rf_analysis.analyze(NOISE))
+one_per_press.append(
+    rf_analysis.analyze(rf_analysis.encode_binary("1" * 32, protocol=1))
+)
+for item in one_per_press:
+    item["times_seen"] = 1
+check(
+    rf_analysis.preselected_signal_indices(one_per_press) == [0, 1, 3, 4],
+    "Preselect: one capture per press -> all same-shaped decodes, got "
+    f"{rf_analysis.preselected_signal_indices(one_per_press)}",
+)
+check(
+    rf_analysis.preselected_signal_indices(
+        [{"times_seen": 2}, {"times_seen": 40}, {"times_seen": 9}]
+    )
+    == [1],
+    "Preselect: weak candidates below 25 % of the strongest stay unselected",
+)
+check(
+    rf_analysis.preselected_signal_indices(
+        [{"times_seen": 10}, {}, {"times_seen": 12}]
+    )
+    == [0, 2],
+    "Preselect: missing times_seen counts as one reception",
+)
+
+
 if failures:
     print("\nFAILURES:")
     print("\n".join(failures))

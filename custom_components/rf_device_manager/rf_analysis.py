@@ -304,18 +304,36 @@ def preselected_signal_indices(analyses: list[dict[str, Any]]) -> list[int]:
 
     Remotes that cycle through several codes per button produce several
     strong candidates in one learning session; all of them should be stored.
-    One-off captures (noise, neighbouring devices, corrupted frames) stay
-    unselected. The strongest candidate is always selected.
+
+    * If any candidate was received more than once, preselect every candidate
+      received at least ``max(2, 25 % of the strongest)`` times; one-off
+      captures (noise, neighbouring devices, corrupted frames) stay
+      unselected.
+    * If every candidate was received exactly once (receivers whose ``idle``
+      setting packs a whole button press into one capture), counts carry no
+      information: preselect the candidates that decode with the same
+      encoding and bit length as the first one.
+
+    At least one candidate is always preselected.
     """
     if not analyses:
         return []
     counts = [int(analysis.get("times_seen", 1) or 1) for analysis in analyses]
     strongest = max(counts)
-    threshold = max(_PRESELECT_MIN_TIMES_SEEN, strongest * _PRESELECT_MIN_RATIO)
-    selected = [index for index, count in enumerate(counts) if count >= threshold]
-    if not selected:
-        selected = [counts.index(strongest)]
-    return selected
+    if strongest >= _PRESELECT_MIN_TIMES_SEEN:
+        threshold = max(_PRESELECT_MIN_TIMES_SEEN, strongest * _PRESELECT_MIN_RATIO)
+        return [index for index, count in enumerate(counts) if count >= threshold]
+
+    reference = analyses[0]
+    shape = (reference.get("encoding"), reference.get("bit_count"))
+    if not reference.get("bits") or shape[0] is None:
+        return [0]
+    return [
+        index
+        for index, analysis in enumerate(analyses)
+        if analysis.get("bits")
+        and (analysis.get("encoding"), analysis.get("bit_count")) == shape
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,7 @@
+# Integration tests (tests/integration) against a real Home Assistant core.
+# pytest-homeassistant-custom-component pins the matching homeassistant
+# release; keep it on a release >= the integration's minimum (2026.5).
+pytest-homeassistant-custom-component==0.13.375
+# Requirement of the radio_frequency core component (not auto-installed in
+# tests).
+rf-protocols==4.3.0

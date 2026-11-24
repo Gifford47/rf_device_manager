@@ -154,5 +154,61 @@ class RFCommandVariantStorageTests(unittest.TestCase):
         )
 
 
+class RedecodeTests(unittest.TestCase):
+    """Stored commands are re-decoded when DECODER_REVISION increases."""
+
+    def _p8_command(self, bits: str) -> models.RFCommandData:
+        timings = rf_analysis.encode_binary(bits, protocol=8) * 4
+        analysis = rf_analysis.analyze(timings)
+        return models.RFCommandData(
+            protocol="raw",
+            data=timings,
+            pulse_length=analysis["base_unit_us"],
+            source="learned:esphome",
+            fingerprint=analysis["fingerprint"],
+            extra={
+                **{
+                    key: analysis[key]
+                    for key in rf_analysis.STORED_DECODE_KEYS
+                    if key in analysis
+                },
+                "times_seen": 9,
+            },
+        )
+
+    def test_redecode_is_a_no_op_for_current_decodes(self) -> None:
+        cmd = self._p8_command("000101000111000100001001")
+        before = cmd.to_dict()
+        self.assertFalse(cmd.redecode())
+        self.assertEqual(cmd.to_dict(), before)
+
+    def test_redecode_fixes_stale_decode_and_keeps_other_metadata(self) -> None:
+        cmd = self._p8_command("000101000111000100001001")
+        fresh_fingerprint = cmd.fingerprint
+        # Simulate a command learned with the old (inverted) P8 polarity.
+        cmd.fingerprint = "24b:stale"
+        cmd.extra["bits"] = "111010111000111011110110"
+        cmd.extra["hex"] = "0xEB8EF6"
+        timings_before = list(cmd.data)
+
+        self.assertTrue(cmd.redecode())
+        self.assertEqual(cmd.fingerprint, fresh_fingerprint)
+        self.assertEqual(cmd.extra["bits"], "000101000111000100001001")
+        self.assertEqual(cmd.extra["times_seen"], 9)  # not a decode key
+        self.assertEqual(cmd.data, timings_before)  # timings never change
+
+    def test_redecode_keeps_entered_pulse_length_of_encoded_input(self) -> None:
+        timings = rf_analysis.encode_binary("101010101010101010101010", 350, 1)
+        cmd = models.RFCommandData(
+            protocol="binary", data=timings, pulse_length=350, code="1010"
+        )
+        cmd.redecode()
+        self.assertEqual(cmd.pulse_length, 350)
+        self.assertEqual(cmd.extra["bits"], "101010101010101010101010")
+
+    def test_redecode_skips_empty_commands(self) -> None:
+        self.assertFalse(models.RFCommandData().redecode())
+
+
 if __name__ == "__main__":
     unittest.main()
