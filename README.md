@@ -264,8 +264,8 @@ permanently in each entity's `commands` attribute:
 | Encoding | Structure | Typical devices |
 |---|---|---|
 | **Space distance** | constant mark, short/long space | EV1527, PT2262, most cheap 433 MHz remotes |
-| **Pulse width** | constant space, short/long mark | SIRC-style remotes |
-| **PWM (rc-switch)** | mark *and* space share the bit | supported rc-switch protocols (guess included) |
+| **Pulse width** | constant space, short/long mark | SIRC-style remotes, rc-switch protocol 8 |
+| **PWM (rc-switch)** | mark *and* space share the bit | rc-switch protocols 1–5 and 7 (guess included) |
 | **Manchester** | every bit is a level transition | Oregon sensors, some fan remotes |
 
 Because detection is structural, *new/unknown protocols within these
@@ -273,7 +273,10 @@ patterns decode automatically*. Signals that match no pattern still work
 via the raw fallback — they just show as "Raw" with timing statistics.
 
 Decoded bits also power the jitter-immune **fingerprints** used to cluster
-signals while learning and to match incoming signals for (binary) sensors.
+signals while learning and to match incoming signals for all entities. When a
+release improves decoding, stored codes are re-decoded automatically from their
+raw timings on the next start, so they keep matching (the sent timings never
+change).
 
 **Sending** replays the captured timings exactly as received (only
 normalized: sign convention, glitch removal, idle trim — no timing-frame

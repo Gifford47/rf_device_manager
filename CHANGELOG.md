@@ -3,7 +3,7 @@
 All notable changes to RF Device Manager. Versions follow the `version` in
 `custom_components/rf_device_manager/manifest.json`.
 
-## 1.2.0
+## 1.2.0 (unreleased)
 
 ### ⚠️ Upgrade notes — read before updating
 
@@ -17,10 +17,11 @@ All notable changes to RF Device Manager. Versions follow the `version` in
   settings, commands) are migrated to 7, so existing devices keep sending
   exactly as before. Automations calling `send_raw`/`send_code` with an
   explicit `repeat: 0` now send a single frame.
-- Codes learned with **rc-switch Protocol 8** before this release were decoded
-  with inverted bit polarity. They still send and match as before (the raw
-  timings and fingerprints are unchanged in meaning), but the displayed hex/bits
-  differ from a fresh learn. Re-learn them if you rely on the displayed values.
+- **Stored codes are re-decoded once** (decoder revision 1 → 2). Codes learned
+  with rc-switch Protocol 8 (inverted bit polarity before) or Protocol 4 (sync
+  gap not split before) get new fingerprints and displayed hex/bits, so they
+  keep matching received signals. Sent timings are not changed. Only the
+  displayed values (entity `commands` attribute, code details) change.
 
 ### Added
 

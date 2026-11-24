@@ -59,9 +59,12 @@ HA-UI), Geräte-Identität in `entry.data`, veränderliche Einstellungen in
 `Store` (helpers.storage), synchronisiert über `async_remove_entry`.
 
 ```jsonc
+// Store-Wurzel (Schema 1.3): { "devices": {...}, "codes": {...}, "decoder_revision": 2 }
+
 // Gerät (entry.data + entry.options, gespiegelt im Store)
 { "id": "uuid", "name": "Garagentor", "transmitter": "radio_frequency.esp_garage_rf",
-  "settings": { "frequency": 433920000, "default_repeat": 7, "description": "..." } }
+  "settings": { "frequency": 433920000, "default_repeat": 7, "description": "...",
+                "rotation_reset_on_other": false } }
 
 // Code (Store) — 1 Code == 1 Entity, mit 1..n Befehls-Slots
 { "id": "uuid", "device_id": "uuid", "name": "Tor", "entity_type": "cover",
@@ -84,6 +87,27 @@ Alle Formate nutzen eine wiederholbare `ObjectSelector`-Liste mit derselben
 Überschrift und Hinzufügen-Aktion. Binär-/Tri-State-Werte bleiben einzeilig;
 Raw-/B0/B1-/Pronto-Eingaben verwenden mehrzeilige Editoren.
 
+**Schema-Versionen / Migrationen** (`storage.py`, je Schritt genau eine Minor-Version):
+
+| Von → nach | Änderung |
+|---|---|
+| 1.1 → 1.2 | `repeat: 0` hieß „Standard (7)“, heißt jetzt „einmal senden“ → gespeicherte Nullen werden 7 |
+| 1.2 → 1.3 | jeder Befehls-Slot enthält eine **Liste** von Varianten statt eines Objekts |
+
+Config-Entry 1.1 → 1.2 (`async_migrate_entry`): Geräte-`default_repeat` 0 → 7.
+
+**Decoder-Revision:** `rf_analysis.DECODER_REVISION` steht als `decoder_revision`
+im Store. Ist der gespeicherte Wert kleiner, dekodiert `RFDeviceStore` beim Laden
+jeden gespeicherten Befehl neu aus seinen Roh-Timings (`RFCommandData.redecode`:
+Fingerprint + `STORED_DECODE_KEYS`; die Timings selbst bleiben unverändert). So
+passen gelernte Codes nach Decoder-Korrekturen (z. B. P4-Frame-Gap, P8-Polarität)
+weiterhin zu empfangenen Signalen.
+
+**Rotations-Zustand:** eigener kleiner Store `.storage/rf_device_manager_rotation`
+(`{"next": {code_id: {slot: index}}}`), verzögert gespeichert (5 s) und beim
+HA-Shutdown geschrieben. Getrennt vom Code-Store, weil er sich bei jedem Senden
+ändert.
+
 ## 3. Module
 
 ```
@@ -101,7 +125,10 @@ custom_components/rf_device_manager/
 │                         #   Fingerprints (bit-basiert, jitter-immun), Ähnlichkeit/
 │                         #   Clustering-Primitiven, UI-Zusammenfassungen, Encoder
 │                         #   (tristate/binär/rc-switch), Pronto-/Manual-Input-Parser
-├─ storage.py             # RFDeviceStore (Store v1, delay-save, CRUD, Migration)
+├─ storage.py             # RFDeviceStore (Store 1.3, delay-save, CRUD, Migrationen,
+│                         #   Re-Decode bei neuer DECODER_REVISION)
+├─ command_rotation.py    # CommandRotation: nächste Variante je (Code, Slot),
+│                         #   Reset/Persistenz-Serialisierung (rein stdlib)
 ├─ rf_manager.py          # RFManager (Senden via radio_frequency-Helper, Transmitter-
 │                         #   Discovery), ReceiverHub (ESPHome-Subscribe + Bus-Fallback,
 │                         #   Connection-Lifecycle-Callbacks + Reconnect-Scan), CodeMatcher
@@ -130,9 +157,12 @@ custom_components/rf_device_manager/
 **Senden:** Entities und `send_code` wählen über
 `RFManager.async_send_variants()` den nächsten Eintrag je Code-Slot und senden
 ihn über `async_send()`; `send_raw` und der Lerntest senden weiterhin direkt.
-Die Rotation liegt nur im Arbeitsspeicher und beginnt nach einem HA-Neustart
-wieder beim ersten Eintrag. Erkannte Fernbedienungs-Eingaben setzen den nächsten
-Eintrag auf den Nachfolger des empfangenen Codes. Der eigentliche Versand läuft
+Die Rotationsposition wird persistiert und übersteht HA-Neustarts. Erkannte
+Fernbedienungs-Eingaben setzen den nächsten Eintrag auf den Nachfolger des
+empfangenen Codes. Mit der Geräte-Option `rotation_reset_on_other` setzt jedes
+Senden/Empfangen eines Befehls die Rotation aller *anderen* Befehle des Geräts
+auf die erste Variante zurück (Fernbedienungen, die die Codefolge einer Taste
+beim Drücken einer anderen neu starten). Der eigentliche Versand läuft
 über `_StoredCommand(RadioFrequencyCommand)` und
 `radio_frequency.async_send_command()` zum ESPHome-Transmitter. Die Verfügbarkeit
 der Entities folgt dem Transmitter-State (`async_track_state_change_event`).
@@ -141,8 +171,9 @@ der Entities folgt dem Transmitter-State (`async_track_state_change_event`).
 ‚Schließen‘“) → `async_show_progress` mit LearnSession-Task („Warte auf RF-Signal…“)
 → Hub liefert Signale → Dedupe per Fingerprint und Code-Clustering → Auswahlliste
 mit Analyse-Vorschau (Pulse, Basiseinheit, Bits, Hex, Protokollvermutung) und
-Mehrfachauswahl → stärkste Kandidaten werden in ihrer Erstempfangsreihenfolge
-gespeichert → Test der ersten ausgewählten Variante → nächster Slot → Store/Entities live
+Mehrfachauswahl (alle plausiblen Kandidaten vorausgewählt:
+`rf_analysis.preselected_signal_indices`) → stärkste Kandidaten werden in ihrer
+Erstempfangsreihenfolge gespeichert → Test der ersten ausgewählten Variante → nächster Slot → Store/Entities live
 (Coordinator-Diff, kein Reload).
 
 **Empfangen (alle Entities):** Jede Entity registriert die Fingerprints und
