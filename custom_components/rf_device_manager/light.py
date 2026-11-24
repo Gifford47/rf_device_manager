@@ -110,16 +110,22 @@ class RFLight(RFCodeEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off (falls back to the on/toggle command)."""
+        was_on = self._attr_is_on
         self._attr_is_on = False
         self.async_write_ha_state()
-        slot = SLOT_OFF if self._command(SLOT_OFF) is not None else SLOT_ON
-        await self._async_send_slot(slot)
+        if not self._on_toggles_power():
+            await self._async_send_slot(SLOT_OFF)
+        elif was_on:  # a toggle press while off would switch it on
+            await self._async_send_slot(SLOT_ON)
 
     @callback
     def _on_rf_match(self, slot: str, signal: CapturedSignal) -> None:
         """Reflect an external remote press in the light state."""
         if slot == SLOT_ON:
-            self._attr_is_on = True
+            # A toggle-only power button flips the light on every press.
+            self._attr_is_on = (
+                not self._attr_is_on if self._on_toggles_power() else True
+            )
         elif slot == SLOT_OFF:
             self._attr_is_on = False
         else:

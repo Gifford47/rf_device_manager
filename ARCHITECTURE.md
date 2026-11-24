@@ -190,6 +190,11 @@ Cover öffnet, Ventilatorstufe ändert sich …) und feuert das Bus-Event
 (Original-Fernbedienung) in HA sichtbar; sensor/binary_sensor nutzen denselben
 Pfad als primäre Zustandsquelle (Binary Sensor optional mit Auto-Off `off_delay`).
 
+**Umschalt-Taste (switch/light ohne `off`-Slot):** Ist nur `on` angelernt,
+gilt es als Ein/Aus-Toggle (`RFCodeEntity._on_toggles_power`). Ein empfangenes
+`on` kippt den Zustand, und gesendet wird nur, wenn sich der Zustand ändert –
+sonst würde der Toggle das Gerät invertieren.
+
 **Reaktionszeit:** Sende-Aktionen schreiben den optimistischen Zustand *vor* dem
 Await der Übertragung → sofortiges UI-Feedback.
 

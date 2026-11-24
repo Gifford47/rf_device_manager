@@ -44,7 +44,7 @@ from .const import (
 )
 from .coordinator import RFDeviceCoordinator, RFDeviceManagerConfigEntry
 from .device_manager import get_domain_data
-from .models import CapturedSignal, RFCode, RFCommandData
+from .models import SLOT_OFF, CapturedSignal, RFCode, RFCommandData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -344,6 +344,14 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         code = self.code
         variants = code.commands.get(slot) if code else None
         return variants[0] if variants else None
+
+    def _on_toggles_power(self) -> bool:
+        """Return whether ``on`` is a power toggle (no ``off`` command).
+
+        Toggle-style remotes have a single power button: every press flips
+        the device, so sending it for an unchanged state would invert it.
+        """
+        return self._command(SLOT_OFF) is None
 
     async def _async_send_slot(self, slot: str, repeat: int | None = None) -> None:
         """Transmit the command of a slot through the device transmitter.

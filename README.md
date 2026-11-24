@@ -54,6 +54,11 @@ generic RF device manager.
   Assistant (e.g. the physical remote), the matching entity updates its state
   automatically — a switch flips, a cover opens, a fan changes speed — and the
   `rf_device_manager_code_received` event fires for automations.
+- **Toggle-only power buttons**: learn only the *On* command of a switch or
+  light (skip *Off*) when the remote has a single power button. Each received
+  press then flips the state, and Home Assistant only sends the toggle when
+  the state actually changes (turning off an entity that is already off sends
+  nothing).
 - **Instant UI**: send actions update the entity state optimistically before
   the RF transmission completes, so the dashboard reacts immediately.
 - **Services**: `send_code`, `send_raw`, `learn_code` (returns captured

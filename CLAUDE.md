@@ -253,6 +253,10 @@ from a real Sonoff Bridge code, see the B0 test).
   `rf_device_manager_code_received` and calls `_on_rf_match(slot, signal)`.
   Send platforms update optimistic state there; `button` is a no-op;
   `sensor`/`binary_sensor` are receive-only (`RECEIVE_ONLY_TYPES`).
+- **Toggle-only power** (switch/light without an `off` command,
+  `_on_toggles_power()`): a received `on` flips the state, and the toggle is
+  only sent when the state changes (sending it for the current state would
+  invert the device). With an `off` command, `on`/`off` stay absolute.
 - **Attributes:** `commands` (first variant summary per slot, kept for
   backward compatibility) and `command_variants` (all variants).
 - **Availability:** send entities follow the transmitter state; receive-only

@@ -3,6 +3,16 @@
 All notable changes to RF Device Manager. Versions follow the `version` in
 `custom_components/rf_device_manager/manifest.json`.
 
+## Unreleased
+
+### Fixed
+
+- **Toggle-only power buttons** (switch/light with an *On* but no *Off*
+  command): a press of the physical remote now flips the state instead of
+  always reporting *on*, and Home Assistant no longer sends the toggle when the
+  entity is already in the requested state (e.g. *turn off* while off used to
+  switch the device on) (#8).
+
 ## 1.2.0 (2026-11-24)
 
 ### ⚠️ Upgrade notes — read before updating
