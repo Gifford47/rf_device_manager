@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    DEFAULT_REPEAT,
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
     STORAGE_SAVE_DELAY,
@@ -36,9 +37,13 @@ class _RFStore(Store[dict[str, Any]]):
     ) -> dict[str, Any]:
         """Migrate stored data to the current schema version.
 
-        Version 1.2 stores each slot's commands as a list. The model loader
-        also accepts the previous single-object representation, so no eager
-        data rewrite is needed during migration.
+        Each step upgrades the data by exactly one minor version, so stores
+        from any older release are migrated through the whole chain:
+
+        * 1.1 -> 1.2: ``repeat`` 0 used to mean "use the default (7)"; it now
+          means "send once", so stored zeros become 7 (PR #4).
+        * 1.2 -> 1.3: every command slot holds an ordered *list* of command
+          variants instead of a single command object (PR #12).
         """
         data = old_data
         _LOGGER.debug(
@@ -47,8 +52,61 @@ class _RFStore(Store[dict[str, Any]]):
             old_major_version,
             old_minor_version,
         )
-        # The 1.2 shape is normalized by RFCode.from_dict for both old and new data.
+        if old_major_version == 1 and old_minor_version < 2:
+            data = _migrate_repeat_zero(data)
+        if old_major_version == 1 and old_minor_version < 3:
+            data = _migrate_command_variants(data)
         return data
+
+
+def _legacy_repeat(value: Any) -> Any:
+    """Map a pre-1.2 repeat value to its current meaning.
+
+    Before 1.2, a repeat of 0 was silently sent as DEFAULT_REPEAT (7) extra
+    repeats. Since 1.2, 0 sends exactly once, so stored zeros become 7 to
+    keep every existing device and code transmitting exactly as before.
+    """
+    try:
+        return DEFAULT_REPEAT if int(value) <= 0 else value
+    except (TypeError, ValueError):
+        return value
+
+
+def _migrate_repeat_zero(data: dict[str, Any]) -> dict[str, Any]:
+    """Storage 1.1 -> 1.2: rewrite legacy repeat=0 values (see above)."""
+    for device in (data.get("devices") or {}).values():
+        settings = device.get("settings") or {}
+        if "default_repeat" in settings:
+            settings["default_repeat"] = _legacy_repeat(settings["default_repeat"])
+    for code in (data.get("codes") or {}).values():
+        settings = code.get("settings") or {}
+        if "repeat" in settings:
+            settings["repeat"] = _legacy_repeat(settings["repeat"])
+        commands = (code.get("rf_data") or {}).get("commands") or {}
+        for slot_value in commands.values():
+            # Pre-1.3 data holds one dict per slot; tolerate lists as well.
+            variants = slot_value if isinstance(slot_value, list) else [slot_value]
+            for command in variants:
+                if isinstance(command, dict) and "repeat" in command:
+                    command["repeat"] = _legacy_repeat(command["repeat"])
+    return data
+
+
+def _migrate_command_variants(data: dict[str, Any]) -> dict[str, Any]:
+    """Storage 1.2 -> 1.3: wrap each single command object in a variant list."""
+    for code in (data.get("codes") or {}).values():
+        rf_data = code.get("rf_data")
+        if not isinstance(rf_data, dict):
+            continue
+        commands = rf_data.get("commands")
+        if not isinstance(commands, dict):
+            continue
+        rf_data["commands"] = {
+            slot: value if isinstance(value, list) else [value]
+            for slot, value in commands.items()
+            if isinstance(value, (dict, list))
+        }
+    return data
 
 
 class RFDeviceStore:

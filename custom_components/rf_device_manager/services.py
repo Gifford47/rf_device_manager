@@ -43,6 +43,7 @@ from .const import (
     CONF_TRISTATE_CODE,
     DEFAULT_FREQUENCY,
     DEFAULT_LEARN_TIMEOUT,
+    DEFAULT_REPEAT,
     DOMAIN,
     SERVICE_LEARN_CODE,
     SERVICE_SEND_CODE,
@@ -78,7 +79,7 @@ SEND_RAW_SCHEMA = vol.Schema(
         vol.Optional(CONF_RC_PROTOCOL, default=1): vol.All(
             vol.Coerce(int), vol.In(sorted(rf_analysis.RC_PROTOCOLS))
         ),
-        vol.Optional(ATTR_REPEAT, default=0): vol.All(
+        vol.Optional(ATTR_REPEAT, default=DEFAULT_REPEAT): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=50)
         ),
     }
