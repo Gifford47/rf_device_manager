@@ -548,6 +548,9 @@ class RFDeviceManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             options, errors = _validate_device_input(self.hass, user_input)
             if not errors:
+                # The reconfigure form has no "enabled" field; keep the
+                # current state instead of re-enabling a disabled device.
+                options[CONF_ENABLED] = entry.options.get(CONF_ENABLED, True)
                 return self.async_update_reload_and_abort(
                     entry, title=options[CONF_NAME], options=options
                 )
@@ -1088,7 +1091,9 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         assert self._code is not None
         spec = self._slots[self._slot_index]
         menu = ["slot_learn", "slot_manual"]
-        if not spec.required or self._bulk_active:
+        # Same rule as slot_menu: an already configured slot (re-learning)
+        # can be skipped, keeping its current command.
+        if not spec.required or spec.key in self._code.commands or self._bulk_active:
             menu.append("slot_skip")
         return self.async_show_menu(
             step_id="slot_learn_failed",
@@ -1472,7 +1477,10 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
     async def async_step_slot_test(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Send the first selected variant once for a live test."""
+        """Send the first selected variant for a live test.
+
+        Uses the variant's repeat setting, exactly like a later real send.
+        """
         assert self._pending is not None
         assert self._code is not None
         device = self._device()
@@ -1735,12 +1743,18 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
                     code.settings[CONF_ICON] = icon
                 else:
                     code.settings.pop(CONF_ICON, None)
-                repeat = user_input.get(CONF_REPEAT)
-                if repeat is not None:
-                    code.settings[CONF_REPEAT] = int(repeat)
+                # The field is prefilled with the current value, so an empty
+                # field means "use the device default" (as in add_code).
+                # Like before, the value applies to all commands of the code.
+                default_repeat = self._device().default_repeat
+                old_repeat = int(code.settings.get(CONF_REPEAT, default_repeat))
+                repeat_raw = user_input.get(CONF_REPEAT)
+                repeat = int(repeat_raw) if repeat_raw is not None else default_repeat
+                code.settings[CONF_REPEAT] = repeat
+                if repeat_raw is not None or repeat != old_repeat:
                     for variants in code.commands.values():
                         for command in variants:
-                            command.repeat = int(repeat)
+                            command.repeat = repeat
                 get_domain_data(self.hass).device_manager.async_update_code(code)
                 return self._finish()
 

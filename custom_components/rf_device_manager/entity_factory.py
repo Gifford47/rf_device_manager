@@ -260,14 +260,19 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         now = self.hass.loop.time()
         if now < self._suppress_receive_until:
             return  # our own transmission echoed back on the receiver
-        if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
-            return  # a repeated frame of the same press
-        self._recv_debounce[slot] = now
         variants = code.commands.get(slot, [])
         variant_count = len(variants)
-        get_domain_data(self.hass).rf_manager.sync_variant(
-            code.id, slot, variant_index, variant_count
-        )
+        rf_manager = get_domain_data(self.hass).rf_manager
+        if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
+            # A repeated frame of the same press: no new event or state. The
+            # rotation still follows the variant just received, so a quick
+            # double press of a rotating remote does not leave the next send
+            # one variant behind.
+            if variant_count > 1:
+                rf_manager.sync_variant(code.id, slot, variant_index, variant_count)
+            return
+        self._recv_debounce[slot] = now
+        rf_manager.sync_variant(code.id, slot, variant_index, variant_count)
         if variant_count > 1:
             next_variant = (variant_index + 1) % variant_count
             sync_detail = (
@@ -314,15 +319,20 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         """Self-remove when deleted; re-sync matcher and refresh otherwise.
 
         Re-registering on every coordinator update keeps the matcher in sync
-        after a command is (re-)learned, edited or removed.
+        after a command is (re-)learned, edited or removed. The new
+        registration is added before the old one is dropped, so the matcher
+        never runs empty in between - that would stop and restart the
+        receiver hub (and its ESPHome subscriptions) on every edit.
         """
         if self.code is None:
             if not self._removing:
                 self._removing = True
                 self.hass.async_create_task(self.async_remove(force_remove=True))
             return
-        self._async_unregister_matcher()
+        old_unsub, self._matcher_unsub = self._matcher_unsub, None
         self._async_register_matcher()
+        if old_unsub is not None:
+            old_unsub()
         super()._handle_coordinator_update()
 
     # ------------------------------------------------------------------

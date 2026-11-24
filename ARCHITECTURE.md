@@ -159,7 +159,10 @@ custom_components/rf_device_manager/
 ihn über `async_send()`; `send_raw` und der Lerntest senden weiterhin direkt.
 Die Rotationsposition wird persistiert und übersteht HA-Neustarts. Erkannte
 Fernbedienungs-Eingaben setzen den nächsten Eintrag auf den Nachfolger des
-empfangenen Codes. Mit der Geräte-Option `rotation_reset_on_other` setzt jedes
+empfangenen Codes – auch, wenn die Entprellung den Empfang sonst verwirft
+(schneller Doppeldruck). Schlägt ein Senden fehl, wird die Rotation
+zurückgesetzt, damit die nicht gesendete Variante beim nächsten Mal erneut
+drankommt. `send_code` lehnt deaktivierte Codes und Geräte ab. Mit der Geräte-Option `rotation_reset_on_other` setzt jedes
 Senden/Empfangen eines Befehls die Rotation aller *anderen* Befehle des Geräts
 auf die erste Variante zurück (Fernbedienungen, die die Codefolge einer Taste
 beim Drücken einer anderen neu starten). Der eigentliche Versand läuft

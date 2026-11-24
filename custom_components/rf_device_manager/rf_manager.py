@@ -833,11 +833,15 @@ class ReceiverHub:
                 return
         else:
             return
-        frequency = event.data.get("frequency")
+        try:
+            frequency = int(event.data.get("frequency") or 0) or None
+        except (TypeError, ValueError):
+            # The frequency is only metadata; keep the capture itself.
+            frequency = None
         self._async_dispatch(
             timings,
-            source=event.data.get("source", "event"),
-            frequency=int(frequency) if frequency else None,
+            source=str(event.data.get("source", "event")),
+            frequency=frequency,
         )
 
     @callback
@@ -1222,25 +1226,42 @@ class RFManager:
         context: str,
         repeat: int | None = None,
     ) -> None:
-        """Send the next command variant and advance its persisted rotation."""
+        """Send the next command variant and advance its persisted rotation.
+
+        A failed send leaves the rotation where it was (the variant did not
+        go on air) and does not reset sibling rotations.
+        """
         if not variants:
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="empty_command"
             )
+        count = len(variants)
         # Advance before awaiting transmission so concurrent sends reserve
         # different variants rather than racing on the same current index.
-        index = self._variant_rotation.next_index(code_id, slot, len(variants))
-        siblings_reset = self._async_reset_sibling_rotation(code_id, slot)
-        if len(variants) > 1 or siblings_reset:
-            self._async_schedule_rotation_save()
+        index = self._variant_rotation.next_index(code_id, slot, count)
         command = variants[index]
         log_context = (
-            f"{context}, slot {slot}, variant {index + 1}/{len(variants)}, "
+            f"{context}, slot {slot}, variant {index + 1}/{count}, "
             f"fingerprint {command.fingerprint or 'n/a'}"
         )
-        await self.async_send(
-            command, transmitter, repeat=repeat, log_context=log_context
-        )
+        try:
+            await self.async_send(
+                command, transmitter, repeat=repeat, log_context=log_context
+            )
+        except Exception:
+            if self._variant_rotation.rollback(code_id, slot, index, count):
+                _LOGGER.debug(
+                    "Send failed for %s; the next send retries variant %d/%d",
+                    log_context,
+                    index + 1,
+                    count,
+                )
+            raise
+        finally:
+            if count > 1:
+                self._async_schedule_rotation_save()
+        if self._async_reset_sibling_rotation(code_id, slot):
+            self._async_schedule_rotation_save()
 
     @callback
     def sync_variant(

@@ -349,7 +349,7 @@ the rules every pull request has to follow.
 
 | Service | Description |
 |---|---|
-| `rf_device_manager.send_code` | Send a stored command of a managed device (`device_id`, `code`, optional `command`, `repeat`). |
+| `rf_device_manager.send_code` | Send a stored command of a managed device (`device_id`, `code`, optional `command`, `repeat`). Disabled codes and devices are refused. |
 | `rf_device_manager.send_raw` | Send ad-hoc RF data (raw/tri-state/binary/Pronto) through any transmitter. |
 | `rf_device_manager.learn_code` | Listen for RF signals; returns the analyzed captures as response data. |
 

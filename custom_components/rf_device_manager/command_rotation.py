@@ -33,6 +33,25 @@ class CommandRotation:
         self._next_indices[key] = (index + 1) % count
         return index
 
+    def rollback(self, code_id: str, slot: str, index: int, count: int) -> bool:
+        """Undo ``next_index`` after the send of variant ``index`` failed.
+
+        The variant never went on air, so the next send must use it again;
+        otherwise a two-variant remote would repeat the code the receiver
+        last accepted. Nothing changes when another send or a reception has
+        moved the rotation on in the meantime. Returns whether it rolled back.
+        """
+        if count <= 1 or not 0 <= index < count:
+            return False
+        key = (code_id, slot)
+        if self._next_indices.get(key, 0) % count != (index + 1) % count:
+            return False
+        if index:
+            self._next_indices[key] = index
+        else:
+            self._next_indices.pop(key, None)
+        return True
+
     def peek_index(self, code_id: str, slot: str, count: int) -> int:
         """Return the index the next send would use, without advancing."""
         if count <= 1:

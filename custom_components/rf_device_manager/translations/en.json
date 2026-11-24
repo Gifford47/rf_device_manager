@@ -242,6 +242,9 @@
           "description": "Description",
           "icon": "Icon",
           "repeat": "Repeats (applies to all commands)"
+        },
+        "data_description": {
+          "repeat": "Number of additional transmissions after the first, for every command of this code. Leave blank to use the device default; 0 sends each command exactly once."
         }
       },
       "code_relearn": {
@@ -540,6 +543,12 @@
     },
     "invalid_rf_data": {
       "message": "Invalid RF data: {error}"
+    },
+    "code_disabled": {
+      "message": "RF code “{code}” is disabled."
+    },
+    "device_disabled": {
+      "message": "RF device “{device}” is disabled."
     }
   }
 }

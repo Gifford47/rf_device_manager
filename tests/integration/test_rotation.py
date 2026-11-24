@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
-from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
+import pytest
+
+from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.rf_device_manager.const import (
+    DOMAIN,
     EVENT_CODE_RECEIVED,
     ROTATION_STORAGE_KEY,
 )
 from custom_components.rf_device_manager.device_manager import get_domain_data
 
 from .conftest import (
+    DEVICE_ID,
     GIOLA_SPEED_1,
     SYNTHETIC_SPEED_2,
+    TRANSMITTER,
     code_dict,
     command_dict,
     device_options,
@@ -121,6 +128,26 @@ async def test_every_received_variant_is_recognized_and_syncs_next_send(
     receive(hass, p8_timings(GIOLA_SPEED_1[1]))
     await _press(hass, entity_id)
     assert sent_hex(sent[-1]) == GIOLA_SPEED_1[2]
+
+
+async def test_quick_double_press_keeps_rotation_in_step(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """A second variant inside the debounce window still syncs the rotation."""
+    await setup_device(
+        hass, hass_storage, {"speed1": _button("speed1", "Speed 1", GIOLA_SPEED_1)}
+    )
+    events = []
+    hass.bus.async_listen(EVENT_CODE_RECEIVED, callback(lambda event: events.append(event)))
+
+    # Real debounce (no_receive_guards not used): both presses land in 1 s.
+    receive(hass, p8_timings(GIOLA_SPEED_1[0]))
+    receive(hass, p8_timings(GIOLA_SPEED_1[1]))
+    await hass.async_block_till_done()
+    assert len(events) == 1  # repeated frames still fire only once
+
+    await _press(hass, entity_id_for(hass, "button", "speed1"))
+    assert [sent_hex(timings) for timings in sent] == [GIOLA_SPEED_1[2]]
 
 
 async def test_received_variant_fires_only_its_own_button(
@@ -259,6 +286,66 @@ async def test_reset_option_also_covers_slots_of_one_entity(
         SYNTHETIC_SPEED_2[0],
         GIOLA_SPEED_1[0],
     ]
+
+
+async def _send_code(hass: HomeAssistant, code: str) -> None:
+    await hass.services.async_call(
+        DOMAIN,
+        "send_code",
+        {"device_id": DEVICE_ID, "code": code},
+        blocking=True,
+    )
+
+
+async def test_send_to_unavailable_transmitter_does_not_skip_a_variant(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """A variant that never went on air is sent again by the next send."""
+    await setup_device(
+        hass, hass_storage, {"speed1": _button("speed1", "Speed 1", GIOLA_SPEED_1)}
+    )
+    await _send_code(hass, "speed1")
+    hass.states.async_set(TRANSMITTER, STATE_UNAVAILABLE)
+    with pytest.raises(HomeAssistantError):
+        await _send_code(hass, "speed1")
+    hass.states.async_set(TRANSMITTER, "unknown")
+    await _send_code(hass, "speed1")
+
+    assert [sent_hex(timings) for timings in sent] == GIOLA_SPEED_1[:2]
+
+
+async def test_failed_transmission_does_not_skip_a_variant_or_reset_siblings(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """A transmitter error keeps this rotation and the siblings' rotations."""
+    await setup_device(
+        hass,
+        hass_storage,
+        {
+            "speed1": _button("speed1", "Speed 1", GIOLA_SPEED_1),
+            "speed2": _button("speed2", "Speed 2", SYNTHETIC_SPEED_2),
+        },
+        options=device_options(rotation_reset_on_other=True),
+    )
+    await _press(hass, entity_id_for(hass, "button", "speed1"))
+    await _press(hass, entity_id_for(hass, "button", "speed2"))
+    with (
+        patch(
+            "custom_components.rf_device_manager.rf_manager.rf_async_send_command",
+            AsyncMock(side_effect=HomeAssistantError("radio busy")),
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
+        await _send_code(hass, "speed1")
+    await _send_code(hass, "speed2")
+
+    assert [sent_hex(timings) for timings in sent] == [
+        GIOLA_SPEED_1[0],
+        SYNTHETIC_SPEED_2[0],
+        SYNTHETIC_SPEED_2[1],  # not restarted by the failed Speed 1 send
+    ]
+    rf_manager = get_domain_data(hass).rf_manager
+    assert rf_manager.next_variant_index("speed1", "press", 4) == 0
 
 
 async def test_deleting_a_code_drops_its_rotation(

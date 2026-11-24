@@ -17,6 +17,9 @@ All notable changes to RF Device Manager. Versions follow the `version` in
   settings, commands) are migrated to 7, so existing devices keep sending
   exactly as before. Automations calling `send_raw`/`send_code` with an
   explicit `repeat: 0` now send a single frame.
+- **`send_code` refuses disabled codes and devices** (new errors
+  `code_disabled` / `device_disabled`). Before, the service sent them even
+  though their entities were unavailable.
 - **Stored codes are re-decoded once** (decoder revision 1 → 2). Codes learned
   with rc-switch Protocol 8 (inverted bit polarity before) or Protocol 4 (sync
   gap not split before) get new fingerprints and displayed hex/bits, so they
@@ -58,3 +61,17 @@ All notable changes to RF Device Manager. Versions follow the `version` in
 - RC-Switch Protocol 4 sync gap (2.28 ms) is recognized as a frame boundary
   (#10).
 - RC-Switch Protocol 8 bit polarity and pulse-length detection (#11).
+- A failed send no longer skips a command variant: the rotation is rolled
+  back and sibling rotations are not reset, so two-variant remotes do not
+  repeat the last accepted code after a transmitter error.
+- A quick double press of a rotating remote (inside the 1 s receive
+  debounce) keeps the next send's variant in step.
+- Editing a code no longer briefly stops and restarts the receiver hub and
+  its ESPHome subscriptions when the device has a single entity.
+- Reconfiguring a disabled device no longer re-enables it.
+- Re-learning an already configured command offers "Skip" after a learn
+  timeout, keeping the stored command.
+- Clearing the repeat field when editing a code uses the device default
+  instead of silently keeping the old value.
+- A non-numeric `frequency` in an `esphome.rf_code_received` event no longer
+  drops the capture.
