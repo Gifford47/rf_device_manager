@@ -21,6 +21,40 @@ jobs:
           python-version: "3.13"
       - name: Run decoder tests
         run: python tests/test_decoders.py
+      - name: Run model storage tests
+        run: python tests/test_models.py
+      - name: Run command rotation tests
+        run: python tests/test_rotation.py
+
+  integration-tests:
+    name: Integration tests (pinned HA)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install test requirements
+        run: pip install -r requirements_test.txt
+      - name: Run pytest
+        run: pytest tests/integration -p no:sugar
+
+  smoke-latest-ha:
+    name: Smoke test (latest HA)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install latest Home Assistant
+        run: pip install homeassistant rf-protocols
+      - name: Run smoke test
+        run: python tests/smoke_latest_ha.py
 
   hassfest:
     name: Hassfest

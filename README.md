@@ -31,13 +31,19 @@ generic RF device manager.
   validation.
 - **Learning wizard**: step-by-step per command, progress display
   ("Waiting for RF signal…"), automatic **signal clustering** (jittery
-  repeats of the same button collapse into one entry, ranked by how often
-  it was received), decoded previews (protocol, bits, hex, tri-state,
-  rc-switch protocol guess) and live testing before saving.
-- **Manual entry**: raw timings, **Tasmota/Portisch RfRaw B0/B1** bucket
-  codes (`AA B0 … 55`), tri-state (PT2262/EV1527), binary with rc-switch
-  protocols 1–8, Pronto hex — everything is normalized to raw timings
-  internally.
+  repeats collapse into one candidate; candidates are prioritized by
+  reception count to limit noise), decoded previews (protocol, bits, hex,
+  tri-state, rc-switch protocol guess), and multi-select learning of command
+  variants. Retained candidates are shown in first-reception order, allowing
+  fixed rotating-code remotes to be taught as an ordered sequence, with live
+  testing before saving.
+- **Manual entry**: choose raw timings, **Tasmota/Portisch RfRaw B0/B1**,
+  tri-state, binary/rc-switch, or Pronto. Every format supports multiple
+  ordered variants in a consistent repeatable list. Binary and tri-state
+  values use single-line editors; raw/B0/B1/Pronto use multiline editors. On
+  Home Assistant Core 2026.11 and newer, the format dropdown dynamically shows
+  only the matching editor and relevant encoding settings on one page; older
+  supported Core versions use a compatible two-step form.
 - **9 entity types**: switch, light (stepped brightness), fan (speeds,
   oscillation, direction), cover (open/close/stop), button, select, number,
   plus sensor and binary sensor (**receive-side** via fingerprint matching,
@@ -57,6 +63,30 @@ generic RF device manager.
 - **Persistence** via the HA storage API (`.storage/rf_device_manager`),
   versioned and migratable. No YAML files.
 - Translations: **English** and **German**.
+
+### Rotating-code remotes (several codes per button)
+
+Some remotes (many 433 MHz ceiling fans, some RF plugs) send a **different
+code on every press of the same button**, cycling through a fixed set (e.g.
+4 codes). Their receivers may reject a code that equals the previous one, and
+learning only one of the codes means HA misses the other presses.
+
+- **Learning:** press the button several times (e.g. 4×, about one press
+  per second) while the wizard listens. Every distinct code is shown in the
+  order it was first received; all candidates received often enough to be a
+  real press are preselected. Save them together as the command's variants.
+- **Sending:** each send uses the next variant in the stored order, per code
+  and command. The position is **saved** (`.storage/rf_device_manager_rotation`)
+  and survives Home Assistant restarts.
+- **Receiving:** every variant is matched, so each press of the physical
+  remote is recognized. A received press also synchronizes the next send to
+  the variant after the received one.
+- **Optional:** *Restart other buttons' code sequence* (device setting).
+  Some remotes restart a button's code sequence when a different button is
+  pressed. With this enabled, sending or receiving any command of the device
+  resets the rotation of all its other commands to their first variant.
+
+Commands with a single variant behave exactly as before.
 
 ## 📋 Requirements
 
@@ -179,6 +209,10 @@ remote_receiver:
 
 ## 📦 Installation
 
+> **Updating from 1.1.x?** Read the [upgrade notes in the changelog](CHANGELOG.md)
+> first — 1.2.0 migrates the storage format and cannot be downgraded without
+> restoring a backup.
+
 ### HACS (recommended)
 
 1. HACS → three dots (⋮) → **Custom repositories**.
@@ -201,9 +235,16 @@ remote_receiver:
 3. Open **Configure** on the device → *Add new RF code*.
 4. Choose the entity type and set its type-specific options (e.g. fan speed
    count).
-5. Per command: **learn** (press the remote button), pick the signal,
-   **test**, save — or enter the code manually.
+5. Per command: **learn** (press the remote button), pick the signal(s),
+   **test**, save — or enter the code manually. For rotating-code remotes,
+   press the button several times while learning (see above).
 6. The entity appears immediately — no restart, no reload.
+
+**Many buttons at once:** for a multi-button remote, use *Add buttons*
+instead. Paste the button names (one per line, or comma separated), then
+press each button on the remote as the wizard asks for it. Every name becomes
+a stateless button entity, saved as soon as it is learned; a warning appears
+if a press repeats a code that is already stored (wrong button pressed?).
 
 Codes can be edited, re-learned per command, tested, disabled or deleted at
 any time via *Manage RF codes*. Device base settings are also available via
@@ -223,8 +264,8 @@ permanently in each entity's `commands` attribute:
 | Encoding | Structure | Typical devices |
 |---|---|---|
 | **Space distance** | constant mark, short/long space | EV1527, PT2262, most cheap 433 MHz remotes |
-| **Pulse width** | constant space, short/long mark | SIRC-style remotes |
-| **PWM (rc-switch)** | mark *and* space share the bit | rc-switch protocols 1–8 (guess included) |
+| **Pulse width** | constant space, short/long mark | SIRC-style remotes, rc-switch protocol 8 |
+| **PWM (rc-switch)** | mark *and* space share the bit | rc-switch protocols 1–5 and 7 (guess included) |
 | **Manchester** | every bit is a level transition | Oregon sensors, some fan remotes |
 
 Because detection is structural, *new/unknown protocols within these
@@ -232,18 +273,22 @@ patterns decode automatically*. Signals that match no pattern still work
 via the raw fallback — they just show as "Raw" with timing statistics.
 
 Decoded bits also power the jitter-immune **fingerprints** used to cluster
-signals while learning and to match incoming signals for (binary) sensors.
+signals while learning and to match incoming signals for all entities. When a
+release improves decoding, stored codes are re-decoded automatically from their
+raw timings on the next start, so they keep matching (the sent timings never
+change).
 
 **Sending** replays the captured timings exactly as received (only
-normalized: sign convention, glitch removal, idle trim — no rotation,
-quantization or "cleaning") and repeats them, by default 8 times on air
+normalized: sign convention, glitch removal, idle trim — no timing-frame
+rotation, quantization or "cleaning") and repeats them, by default 8 times on air
 like briefly holding the remote button, since OOK receivers only accept a
-code after several identical frames. The repeat count can be overridden per
-code, per device or per service call.
+code after several identical frames. The repeat count (extra repeats, default
+7) can be overridden per code, per device or per service call; `0` sends the
+code exactly once.
 
-> **Limitation:** rolling-code systems (KeeLoq, Somfy RTS, …) send a
-> different code on every press — record/replay cannot work for those by
-> design.
+> **Limitation:** true rolling-code systems (KeeLoq, Somfy RTS, …) generate
+> a new, typically authenticated code for every press and are not supported.
+> A fixed, finite set of learned command variants is supported.
 
 ## 🛠️ Extending the decoders
 
@@ -279,14 +324,26 @@ manual entry are a one-line addition to the `RC_PROTOCOLS` table.
 
 ### Development / tests
 
-The decoder pipeline is testable without a Home Assistant installation:
+The decoder pipeline and the model/rotation logic are testable without a
+Home Assistant installation:
 
 ```bash
 python tests/test_decoders.py
+python tests/test_models.py
+python tests/test_rotation.py
+```
+
+Integration tests (storage migrations, setup, rotation persistence, config
+and options flows) run against a real Home Assistant core:
+
+```bash
+pip install -r requirements_test.txt
+pytest tests/integration
 ```
 
 The same tests run in CI (`.github/workflows/validate.yaml`) alongside
-hassfest and HACS validation.
+hassfest and HACS validation. See [CONTRIBUTING / CLAUDE.md](CLAUDE.md) for
+the rules every pull request has to follow.
 
 ## 🔧 Services
 

@@ -1,10 +1,11 @@
 # CLAUDE.md — RF Device Manager
 
 Guidance for AI assistants (and humans) working in this repository. Read this
-before changing code. It captures the architecture, the non-obvious logic, and
-the invariants that keep the integration working.
+before changing code. It captures the architecture, the non-obvious logic, the
+invariants that keep the integration working, and the **mandatory rules for
+pull requests and new protocols** (sections 10 and 11).
 
-## What this is
+## 1. What this is
 
 A Home Assistant custom integration (`custom_components/rf_device_manager`,
 domain `rf_device_manager`, HA ≥ 2026.5) that manages sub-GHz RF devices
@@ -18,14 +19,16 @@ entirely from the UI: learn, receive, edit, test, send RF codes — no YAML.
   *receiver* entities (as of 2026.7). Fallback: HA bus event
   `esphome.rf_code_received`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and data model, and
-[README.md](README.md) for user-facing docs.
+See [ARCHITECTURE.md](ARCHITECTURE.md) (German) for the module map and data
+model, [README.md](README.md) for user-facing docs and
+[CHANGELOG.md](CHANGELOG.md) for release and upgrade notes.
 
-## Golden rules / invariants
+## 2. Golden rules / invariants
 
-1. **`decoders.py` and `rf_analysis.py` must stay pure Python** (stdlib only, no
-   `homeassistant`/`aioesphomeapi` imports). This is what makes
-   `tests/test_decoders.py` runnable without HA. Do not add HA imports there.
+1. **Pure-Python core.** `decoders.py`, `rf_analysis.py` and
+   `command_rotation.py` use the stdlib only (no `homeassistant` /
+   `aioesphomeapi` imports). This is what makes `tests/test_decoders.py`,
+   `tests/test_models.py` and `tests/test_rotation.py` runnable without HA.
 2. **`aioesphomeapi` is an optional import.** ESPHome is only an
    `after_dependency`. All uses are guarded by `HAS_AIOESPHOMEAPI` in
    `rf_manager.py`. Never import it at module top level elsewhere.
@@ -40,212 +43,429 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map and data model, and
    captured (only `normalize()`: sign, glitch-merge, idle-trim). An earlier
    frame-rotation + timing-quantization step was removed because it corrupted
    signals; do not reintroduce waveform reshaping on the send path.
-6. **Python 3.11 locally** (HA runtime is newer). Avoid 3.12-only syntax like
-   `type X = ...` aliases in code that the local validation scripts parse.
-7. **Keep `strings.json` and `translations/en.json` identical.** `en.json` is a
-   copy of `strings.json`. After editing `strings.json`, copy it over `en.json`
-   and mirror every key into `translations/de.json`. The validation script
-   fails on any key mismatch.
+6. **Stored timings are never rewritten.** Migrations and re-decoding may
+   change metadata (`fingerprint`, `extra`, `repeat`, list shape), never
+   `data`. Sending must stay bit-identical across upgrades.
+7. **Fingerprints are the receive-matching key.** Any change that alters the
+   `bits`/`fingerprint` of an existing capture requires a
+   `DECODER_REVISION` bump (section 4). The golden test enforces this.
+8. **Standalone scripts stay Python 3.11 compatible** (the maintainer runs
+   them locally on 3.11; the HA runtime and CI use 3.13/3.14). Avoid 3.12+
+   syntax such as `type X = ...` in the pure modules and `tests/test_*.py`.
+9. **`strings.json` and `translations/en.json` are identical**, and
+   `translations/de.json` has exactly the same key set. After editing
+   `strings.json`, copy it over `en.json` and mirror every key into `de.json`.
+10. **Menu step titles must be static** (no `{placeholders}`): HA only applies
+    `description_placeholders` to a menu's description. Placeholders in a menu
+    title raise a formatjs `MISSING_VALUE` error.
+11. **ICU escaping:** next to a placeholder use typographic quotes (`„…“`,
+    `“…”`), never straight `'…'` — single quotes are ICU escape characters and
+    hide the placeholder.
 
-## Data model (models.py)
+## 3. Data model (models.py)
 
-- **`RFDeviceConfig`** — one managed device. Persisted in the config entry
-  (`entry.data` holds only `device_id`; `entry.options` holds the mutable
-  settings) *and* mirrored into the central store.
+- **`RFDeviceConfig`** — one managed device = one config entry.
+  `entry.data` holds only `device_id`; `entry.options` holds the mutable
+  settings, mirrored into the central store by `_sync_store_from_entry`
+  (`__init__.py`). Extra settings (e.g. `rotation_reset_on_other`) live in
+  `RFDeviceConfig.settings`.
 - **`RFCode`** — one code = **one entity**. Has an `entity_type` and a dict of
-  **command slots** → `RFCommandData`.
+  **command slots** → ordered `list[RFCommandData]` (**command variants**).
 - **`RFCommandData`** — one transmittable/matchable command. `data` is always
-  normalized raw timings. `protocol`/`code` keep the original input form;
-  `extra` holds decode results (`encoding`, `bits`, `hex`, `fingerprint`, …).
-  `fingerprint` is the key used for receive-matching.
-- **Command slots** are derived from the entity type by
-  `models.build_slots(entity_type, settings)`, e.g. switch → `on`/`off`; cover →
-  `open`/`close`/`stop`; fan → `off`/`speed_1..n`/`oscillate`/direction; select →
-  `option:<name>`; number/sensor → `value:<v>`. Slot keys are the contract
-  between the learn wizard, the platforms, and the matcher.
+  normalized raw timings. `protocol`/`code`/`pulse_length` keep the original
+  input form; `extra` holds decode results (`STORED_DECODE_KEYS`: `encoding`,
+  `bits`, `bit_count`, `hex`, `tristate`, `protocol_guess`, `frame_count`, plus
+  `times_seen` for learned commands). `fingerprint` is the receive-matching
+  key. `redecode()` refreshes fingerprint + decode keys from `data`.
+- **Command slots** come from `models.build_slots(entity_type, settings)`,
+  e.g. switch → `on`/`off`; cover → `open`/`close`/`stop`; fan →
+  `off`/`speed_1..n`/`oscillate`/direction; select → `option:<name>`;
+  number/sensor → `value:<v>`; button → `press`. **Slot keys are the contract**
+  between the learn wizard, the platforms and the matcher — never rename one
+  without a storage migration.
+- **Command variants** (rotating-code remotes, issue #2): a slot holds 1..n
+  variants in their first-received order. Re-learning a slot replaces the
+  whole list. Sends rotate through the list per (code, slot); every variant is
+  registered for receive matching.
 
-Storage: `storage.py` (`RFDeviceStore`, HA Storage API, versioned + migratable).
-Devices/codes are JSON dicts via `to_dict`/`from_dict` (tolerant of missing
-keys).
+### Storage (storage.py)
 
-## Protocol decoding (decoders.py) — the core logic
+`RFDeviceStore` uses the HA Storage API (`.storage/rf_device_manager`,
+`STORAGE_VERSION` 1, `STORAGE_MINOR_VERSION` 3). The payload is
+`{"devices": …, "codes": …, "decoder_revision": N}`. Migrations in
+`_RFStore._async_migrate_func` run **one minor version per step**:
+
+| Step | Change | Origin |
+|---|---|---|
+| 1.1 → 1.2 | `repeat` 0 meant "default (7)", now means "send once": stored zeros → 7 | PR #4 |
+| 1.2 → 1.3 | each slot's single command object → list of variants | PR #12 |
+
+`RFCode.from_dict` additionally tolerates both shapes. Config entries have
+their own version (`RFDeviceManagerConfigFlow.VERSION/MINOR_VERSION`, now 1.2,
+`async_migrate_entry`: device `default_repeat` 0 → 7).
+
+**Rotation state** lives in a separate store
+(`.storage/rf_device_manager_rotation`, `{"next": {code_id: {slot: index}}}`)
+because it changes on every send. It is saved debounced
+(`ROTATION_SAVE_DELAY`) and flushed on HA shutdown (`EVENT_HOMEASSISTANT_FINAL_WRITE`).
+
+**Downgrades are not supported**: older releases cannot read schema 1.3.
+The CHANGELOG upgrade notes say so; keep them accurate.
+
+## 4. Protocol decoding (decoders.py) — the core logic
 
 `decode_frame(frame)` builds a `FrameContext` once (mark/space pairs) and walks
-the `DECODERS` chain **in order**; first structural match wins:
+the `DECODERS` chain **in order**; the first structural match wins:
 
 | Decoder | Structure | Examples |
 |---|---|---|
 | `space_distance` | constant mark, short/long space | EV1527, PT2262 |
-| `mark_width` | constant space, short/long mark | SIRC-style |
-| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–8 (+ guess) |
+| `mark_width` | constant space, short/long mark | SIRC-style, rc-switch P8 |
+| `pwm` | mark+space share the bit (rc-switch) | rc-switch P1–5, P7 (+ guess) |
 | `manchester` | every bit is a level transition | Oregon, some fans |
 
-Detection is **structural, not a protocol database** — unknown remotes decode as
-long as they use one of these schemes. Anything else still works via the raw
-fallback (no `bits`, matched by frame similarity instead).
+Detection is **structural, not a protocol database** — unknown remotes decode
+as long as they use one of these schemes. Anything else still works via the
+raw fallback (no `bits`, matched by frame similarity instead).
 
-**To add a decoder:** write `_decode_x(ctx) -> DecodedFrame | None` (return
-`None` unless the frame *cleanly* matches — a false positive poisons
-fingerprints), document its waveform, register it in `DECODERS` (order =
-priority, most restrictive first), add an `ENCODINGS[...]` label, and add a test
-case in `tests/test_decoders.py` (ideally from a real ESPHome
-`remote_receiver` log line, like the EV1527 case).
+- **Protocol 8 polarity:** rc-switch P8 maps the *longer* mark to bit 0. The
+  profile is identified from its timing ratios and its polarity comes from
+  `RC_PROTOCOLS`; the base pulse is derived from the constant 16T spaces.
+- **Manchester:** a trailing space half-bit is swallowed by the inter-frame
+  gap; it is reconstructed as the complement of the last half. Don't
+  "simplify" that away.
+- `RC_PROTOCOLS` (P1–5, 7, 8) is used for manual binary/tri-state encoding and
+  for protocol guesses.
 
-Manchester note: a trailing space half-bit gets swallowed by the inter-frame
-gap; it's reconstructed as the complement of the last half (every bit is a
-transition). Don't "simplify" that away.
+### Decoder revision (rf_analysis.DECODER_REVISION)
 
-## Analysis pipeline (rf_analysis.py)
+Stored commands carry the fingerprint/bits computed by the decoders at learn
+time. When a decoder change alters them, those codes would silently stop
+matching received signals. Therefore:
 
-- `normalize()` = `ensure_signed` → `remove_glitches` (merge sub-80µs spikes) →
-  `trim_idle`. Run before anything else.
-- `split_frames()` cuts on the inter-frame gap. Threshold is adaptive:
-  `max(2400µs, 1.7 × 95th-percentile pulse)` — tuned so short (~2.8ms) EV1527
-  sync gaps are recognized. Changing these constants changes what counts as a
-  frame boundary; retest against `tests/test_decoders.py`.
+- `DECODER_REVISION` (now **2**) is saved in the store. On load, a lower
+  stored value (or none) triggers `RFDeviceStore._redecode_all()`, which calls
+  `RFCommandData.redecode()` on every variant and saves.
+- History: 1 = up to 1.1.x; 2 = P4 2.28 ms sync gap splits frames (#10), P8
+  polarity fixed (#11).
+- `tests/test_decoders.py` section 10 holds **golden fingerprints** for a fixed
+  capture set (real EV1527, raw fallback, Manchester, tri-state, rc-switch
+  P1–5/7/8). If one changes, the test fails and tells you to bump.
+
+## 5. Analysis pipeline (rf_analysis.py)
+
+- `normalize()` = `ensure_signed` → `remove_glitches` (merge sub-80µs spikes)
+  → `trim_idle`. Run before anything else.
+- `split_frames()` cuts on the inter-frame gap: `max(2000 µs, 1.7 × P95 of all
+  pulses)`. The 2000 µs floor admits rc-switch P4's 2.28 ms sync; the adaptive
+  term keeps longer in-frame spaces (P8's 3.2 ms data LOW) intact. Changing
+  these constants changes frame boundaries → fingerprints → revision bump.
 - `fingerprint()` = hash of decoded bits when decodable (jitter-immune,
-  `"<n>b:<sha>"`), else quantized-frame hash (`"<n>:<sha>"`). **Fingerprints are
-  the receive-matching key**; if you change fingerprinting, stored codes stop
-  matching received signals until re-learned.
-- `same_code(a, b)` clusters captures: identical decoded bits, else
-  `frames_similar` (±30% per-pulse tolerance). Used by the learn session.
-- Manual input parsers: `parse_timings_text`, `parse_tasmota_rfraw` (B0/B1
-  bucket format), `encode_binary`/`encode_tristate` (rc-switch), `parse_pronto`.
+  `"<n>b:<sha>"`), else quantized-frame hash (`"<n>:<sha>"`).
+- `same_code(a, b)`: identical decoded bits, else `frames_similar` (±30 % per
+  pulse). `cluster_learn_signals()` merges same-code captures, keeps the
+  `max_signals` most frequently received, and returns them in **first-seen
+  order** (the order of a rotating remote is meaningful).
+- `preselected_signal_indices()` picks the learn-wizard defaults: every
+  candidate seen ≥ `max(2, 25 % of the strongest)` times; if every candidate
+  was seen exactly once (receiver `idle` packs a press into one capture), all
+  candidates with the same encoding and bit length as the first one.
+- Manual input: `parse_manual_variants()` keeps the entered order for raw,
+  Tasmota B0/B1, tri-state, binary and Pronto.
 
 ### Tasmota RfRaw B0/B1 (parse_tasmota_rfraw)
 
 Format: `AA B0 <len> <nbucket> <repeats> <bucket×n (2 bytes µs)> <data> 55`
 (B1: `AA B1 <nbucket> <buckets> <data> 55`). Each **data nibble**: low 3 bits =
-bucket index; bit `0x8` set = **mark**, clear = **space**. This was reverse-
-engineered from a real Sonoff Bridge code (see the B0 test) — the level-bit
-polarity is the non-obvious part.
+bucket index; bit `0x8` set = **mark**, clear = **space** (reverse-engineered
+from a real Sonoff Bridge code, see the B0 test).
 
-## RF communication (rf_manager.py)
+## 6. RF communication (rf_manager.py, command_rotation.py)
 
 - **`RFManager`** — facade: `hub` (ReceiverHub), `matcher` (CodeMatcher),
-  `async_send()`, `new_learn_session()`.
+  `async_send()`, `async_send_variants()`, `sync_variant()`,
+  `new_learn_session()`, rotation helpers.
 - **`async_send()`** — normalizes timings, checks the transmitter isn't
-  `unavailable` (note: `unknown` is a valid "ready" state — a transmitter that
-  has never sent reports `unknown`), builds `_StoredCommand`, applies
-  `DEFAULT_SEND_REPEAT` (7 extra → 8 frames on air, matching a short button
-  hold) when the command's repeat is 0/unset, then calls the core helper.
+  `unavailable` (`unknown` is a valid ready state — a transmitter that has never
+  sent reports `unknown`), builds `_StoredCommand` with the command's `repeat`
+  (extra repeats; **0 = send exactly once**; unset/negative → `DEFAULT_REPEAT`
+  = 7 → 8 frames on air), then calls the core helper.
+- **`async_send_variants()`** — picks the next variant via `CommandRotation`
+  (advanced *before* awaiting so concurrent sends reserve different variants),
+  applies the sibling reset, schedules a rotation save, sends.
+- **`sync_variant()`** — after a matched physical-remote reception (past the
+  self-echo/debounce guards) the next send uses the variant *after* the
+  received one.
+- **Sibling reset** — device option `rotation_reset_on_other`: every send or
+  reception of one (code, slot) resets the rotation of all *other* commands of
+  the device (`CommandRotation.reset_others`; device grouping is resolved by
+  `device_manager._rotation_reset_group`, injected via
+  `set_rotation_group_resolver`). Off by default.
+- Rotation is dropped for deleted codes/devices and reset when a slot is
+  re-learned (`reset_code_rotation`, `reset_command_rotation`).
 - **`ReceiverHub`** — multiplexes captures from all sources to subscribers.
-  Sources: ESPHome nodes (native API `subscribe_infrared_rf_receive`, discovered
-  via `list_entities_services()` because core does not cache RF *receiver*
-  infos) + the `esphome.rf_code_received` bus event. Sources attach on first
-  subscriber, detach on last; a 30s maintenance timer re-attaches after ESPHome
-  reconnects. `async_discover()` refreshes the receiver-name cache shown in the
-  learn UI.
-- **`CodeMatcher`** — registered slots `(slot, fingerprint, bits, callback)`;
-  one hub subscription routes each received capture to the matching entities.
-  Matching is **tolerant**: exact fingerprint = distance 0, else decoded-bit
-  Hamming distance ≤ `_MATCH_BIT_TOLERANCE` (15%) — real receptions jitter and
-  corrupt trailing/sync bits, so exact-only misses genuine presses.
-  **At most one slot per entity fires per signal — the closest match** (ties
-  favor the earlier-registered slot, and `build_slots` puts `on` before `off`).
-  This is essential: sibling remote buttons often differ by a single bit, so a
-  received code lands within tolerance of several slots of one entity;
-  dispatching all of them would flip state on/off/on/off once per repeated
-  frame. Codes learned before bit-decoding existed only match exactly until
-  re-learned. Per-slot reception is debounced in the entity
-  (`RECV_DEBOUNCE_S`) since one press arrives as many repeated frames.
-- **`LearnSession`** — waits for the first signal (timeout), then collects for a
-  short window, dedups by exact fingerprint, then `_cluster_learn_signals`
-  merges same-code captures (`same_code`) and ranks by reception count. This is
-  why a single button press yields one top-ranked entry instead of ~8
-  noise/jitter duplicates.
+  Sources: ESPHome nodes (native API `subscribe_infrared_rf_receive`,
+  discovered via `list_entities_services()` because core does not cache RF
+  *receiver* infos) + the `esphome.rf_code_received` bus event. Sources attach
+  on first subscriber and detach on last. ESPHome `disconnect_callbacks`
+  invalidate cached metadata and subscriptions; device-update notifications
+  re-attach immediately after a reconnect; a 30 s maintenance scan picks up new
+  ESPHome entries and retries failures. Receiver metadata (including empty
+  results) is cached per ESPHome connection; failed discovery is not cached.
+  Discovery is serialized per entry.
+- **`CodeMatcher`** — registered variants `(slot, index, fingerprint, bits,
+  callback, group)`. Matching is **tolerant**: exact fingerprint = distance 0,
+  else decoded-bit Hamming distance ≤ `_MATCH_BIT_TOLERANCE` (15 %, min 2).
+  - **At most one slot per entity fires per signal — the closest match**
+    (ties favor the earlier-registered slot; `build_slots` puts `on` before
+    `off`). Sibling buttons often differ by one bit.
+  - **The same holds across the entities of one device** (`group=device_id`):
+    only entities at the group's best distance fire; identical codes on
+    several entities still all fire.
+  - The matched variant index is passed to the callback (rotation sync).
+- **`LearnSession`** — waits for the first signal (timeout), collects for
+  `LEARN_COLLECT_WINDOW` (10 s, long enough for several presses of a rotating
+  button), dedups by exact fingerprint (`times_seen`), then clusters.
 
-## Entities (entity_factory.py + platform files)
+## 7. Entities (entity_factory.py + platform files)
 
 - **`RFCodeEntity`** (base, `CoordinatorEntity` + `RestoreEntity`): one entity
-  per `RFCode`. `has_entity_name`, `assumed_state`. Reads the live code from the
-  coordinator, so store edits (rename, re-learn) apply without reload.
-- **Dynamic add/remove:** `async_setup_code_platform` adds a coordinator
-  listener that diffs stored codes and adds new entities live; a deleted code
-  makes its entity self-remove in `_handle_coordinator_update`.
-- **Sending:** platforms call `_async_send_slot(slot)`. **Optimistic state is
-  written *before* awaiting the send** (`_attr_* = ...; async_write_ha_state()`
-  then `await ...`) so the UI reacts instantly even if the ESP round-trip is
-  slow. Keep this ordering when adding actions.
-- **Receiving (all entities):** the base registers its commands' fingerprints
-  with the `CodeMatcher` in `async_added_to_hass` and re-registers on every
-  coordinator update (fingerprints change after re-learn). On a match,
-  `_handle_received` fires the `rf_device_manager_code_received` bus event and
-  calls `_on_rf_match(slot, signal)`.
-  - Send platforms (switch/light/cover/fan/select/number) override
-    `_on_rf_match` to update optimistic state from the matched slot — this is
-    how an external remote press is reflected in HA.
-  - `button` has no state → base no-op.
-  - `sensor`/`binary_sensor` are receive-only (`RECEIVE_ONLY_TYPES`, no
-    transmitter needed) and use `_on_rf_match` as their primary state source
-    (`RFReceiveCodeEntity` is just a marker subclass now).
-- **Availability:** send entities are unavailable when the transmitter is
-  unavailable (tracked via `async_track_state_change_event`); receive-only
-  entities ignore the transmitter.
+  per `RFCode`, `has_entity_name`, `assumed_state`. Reads the live code from the
+  coordinator, so store edits apply without reload.
+- **Dynamic add/remove:** `async_setup_code_platform` diffs stored codes and
+  adds entities live; a deleted code makes its entity self-remove.
+- **Sending:** platforms call `_async_send_slot(slot)`, which sends through
+  `async_send_variants`. **Optimistic state is written *before* awaiting the
+  send** so the UI reacts instantly. Keep this ordering when adding actions.
+  `_command(slot)` returns the *first* variant (for "is this slot configured"
+  checks only).
+- **Receiving:** the base registers all variants with the matcher on add and
+  on every coordinator update. `_handle_received(slot, signal, variant_index)`
+  applies self-echo suppression (`SELF_ECHO_SUPPRESS_S`) and per-slot debounce
+  (`RECV_DEBOUNCE_S`), syncs the rotation, fires
+  `rf_device_manager_code_received` and calls `_on_rf_match(slot, signal)`.
+  Send platforms update optimistic state there; `button` is a no-op;
+  `sensor`/`binary_sensor` are receive-only (`RECEIVE_ONLY_TYPES`).
+- **Attributes:** `commands` (first variant summary per slot, kept for
+  backward compatibility) and `command_variants` (all variants).
+- **Availability:** send entities follow the transmitter state; receive-only
+  entities ignore it.
 
-## Config/Options flow (config_flow.py)
+## 8. Config/Options flow (config_flow.py)
 
-- Config flow: create device / duplicate device / reconfigure.
-- Options flow (`RFDeviceManagerOptionsFlow`) is the management UI:
-  - device settings; add-code wizard; manage codes (view/edit/relearn/test/
-    toggle/delete).
-  - **Add-code wizard** walks the slots from `build_slots`: per slot →
-    `slot_menu` (learn/manual/skip) → `slot_learn` (`async_show_progress` on the
-    `LearnSession` task) → `slot_learn_done` (pick a clustered signal) →
-    `slot_confirm` (menu: **Save / Test / Discard** buttons) → next slot →
-    `save_code`. Manual entry (`slot_manual`) supports raw / Tasmota B0 /
-    tri-state / binary / Pronto.
-  - **No-receiver guard:** `slot_learn` refreshes `hub.async_discover()` and,
-    if no receiver is found, routes to `slot_no_receiver` (warn + retry /
-    manual / skip) instead of waiting for a signal that can never arrive.
-    `slot_menu` also refreshes discovery so "Active receivers" is accurate.
-  - **No "enabled" toggle** — new codes default to enabled.
-  - **Signal testing is button-based**: select a signal → confirmation step has
-    the "Test" button. There is intentionally no "test only" toggle.
-- **Menu step titles must be static** (no `{placeholders}`): HA only applies
-  `description_placeholders` to a menu's description, not its title —
-  placeholders in a menu title raise a formatjs MISSING_VALUE error. Put dynamic
-  info in the description.
-- **ICU escaping:** in translation strings, wrap placeholders that sit next to
-  literal quotes with typographic quotes (`„…"` / `"…"`), never straight
-  `'…'` — single quotes are ICU escape characters and hide the placeholder.
+- Config flow: create / duplicate / reconfigure a device. The shared device
+  schema includes `rotation_reset_on_other`.
+- Options flow (`RFDeviceManagerOptionsFlow`) is the management UI: device
+  settings, add code, **add buttons** (bulk), manage codes (view/edit/relearn/
+  test/toggle/delete). The options menu does **not** run receiver discovery;
+  `slot_menu`/`slot_learn` do (cached per connection).
+- **Add-code wizard** per slot: `slot_menu` (learn/manual/skip) →
+  `slot_learn` (`async_show_progress` on the `LearnSession` task; no receiver →
+  `slot_no_receiver`) → `slot_learn_done` (multi-select, plausible candidates
+  preselected, order = first-seen order) → `slot_confirm` (menu **Save / Test /
+  Discard**; lists every variant; Test sends the first one; duplicate-code
+  warning) → next slot → `save_code`.
+- **Manual entry:** format dropdown. Core ≥ 2026.11
+  (`_HAS_CONDITIONAL_FORM_FIELDS`) shows only the selected format's editor and
+  settings on one page (`data_entry_flow.Required/Optional(visible=…)`,
+  `probatio.Schema`); older cores use the two-step `slot_manual` →
+  `slot_manual_data`. Both share selector builders and the parser. Unset repeat
+  inherits the code/device setting; 0 sends once.
+- **Bulk buttons** (`add_buttons`): names → queue of `button` codes; each goes
+  straight to `slot_learn` (skip always offered), is saved immediately
+  (`_bulk_active`), ending in `bulk_done`.
+- `_duplicate_warning` compares every pending variant with every stored
+  variant of the device (all wizards).
+- No "enabled" toggle for new codes; signal testing is button-based (Test in
+  `slot_confirm`), there is intentionally no "test only" toggle.
 
-## Services (services.py)
+## 9. Services (services.py)
 
-`send_code` (stored command by device+code+slot), `send_raw` (ad-hoc
-raw/B0/tri-state/binary/Pronto), `learn_code` (returns captured signals as
-response data).
+`send_code` (stored command by device+code+slot, rotates variants),
+`send_raw` (ad-hoc raw/B0/tri-state/binary/Pronto; `repeat` default 7),
+`learn_code` (returns captured signals as response data).
 
-## Testing & validation
+## 10. Rules for pull requests (mandatory)
 
-- `python tests/test_decoders.py` — pure-Python decoder/analysis suite (also in
-  CI `.github/workflows/validate.yaml`). Covers the real EV1527 capture,
-  Manchester jitter, rc-switch, tri-state, B0. **Add a case whenever you touch
-  decoding.**
-- CI also runs `hassfest` and HACS validation (the HACS brands check passes via
-  the local `custom_components/rf_device_manager/brand/icon.png`).
-- No HA test harness in this repo; validate flows by reasoning + hassfest.
+Every PR — from a human or an AI agent — follows these rules. A PR that
+breaks one is not merged until fixed.
 
-## Repo / workflow notes
+### 10.1 Scope and branch
 
-- Published at `github.com/Gifford47/rf_device_manager`. Git over HTTPS needs
-  `git config http.sslBackend schannel` in this environment (corporate TLS).
-- Commit messages: do **not** add a Co-Authored-By trailer (user preference).
+1. **One concern per PR.** Bug fix, feature, refactor and decoder change are
+   separate PRs. Drive-by fixes go into their own commit with their own reason.
+2. **Base on current `main`.** Do not include other PRs' commits or temporary
+   merge commits "for testing". If a PR needs another one, say so at the top of
+   the description ("Depends on #NN"), open it as **draft**, and rebase onto
+   `main` once the dependency has landed.
+3. **Check open PRs for overlap before starting** (`gh pr list`), especially
+   for `config_flow.py`, `rf_manager.py`, `storage.py`, `const.py` and the
+   translation files. Reuse instead of duplicating; mention overlaps.
+4. Branch names: `fix/<topic>`, `feat/<topic>`, `decoder/<topic>`,
+   `docs/<topic>`.
+
+### 10.2 Code
+
+5. Keep the invariants of section 2. Never import HA into the pure modules.
+6. **Storage changes need a migration step**: bump `STORAGE_MINOR_VERSION` by
+   exactly one, add `if old_major_version == 1 and old_minor_version < N:` to
+   `_RFStore._async_migrate_func` (one function per step, chained), keep
+   `from_dict` tolerant of the old shape, and add the step to the table in
+   section 3. **Before bumping, check open PRs for the same number**; two PRs
+   must never claim the same version — the later one takes the next number.
+7. Config entry option changes: new options get a default everywhere they
+   are read (`entry.options.get(KEY, default)`); semantic changes of existing
+   options need an `async_migrate_entry` step and a `MINOR_VERSION` bump.
+8. Changes to decoding/fingerprints follow section 11.5 (`DECODER_REVISION`).
+9. New user-facing strings: `strings.json` → copy to `en.json` → same keys in
+   `de.json` (German, informal "du"). Menu titles stay static.
+10. Send path: optimistic state before `await`; never modify timings.
+11. No new runtime requirement in `manifest.json` without a strong reason
+    (HACS users cannot easily resolve conflicts).
+
+### 10.3 Tests (required, all must pass)
+
+```bash
+python tests/test_decoders.py      # pure decoder/analysis suite
+python tests/test_models.py        # storage shape, redecode
+python tests/test_rotation.py      # rotation state/persistence
+pip install -r requirements_test.txt
+pytest tests/integration           # real HA core (pinned by the harness)
+pip install homeassistant rf-protocols && python tests/smoke_latest_ha.py
+```
+
+12. **Every behavior change gets a test** that fails without the change.
+    Prefer `tests/integration` for anything touching HA (flows, entities,
+    storage, matching); pure logic goes into the standalone scripts.
+13. Integration tests use the fixtures in `tests/integration/conftest.py`
+    (`transmitter`, `sent`, `setup_device`, `receive`, `no_receive_guards`).
+    Event listeners in tests must be `@callback` (plain functions run in the
+    executor → nondeterministic order).
+14. Storage changes: add a test that loads data in the **previous** format
+    and asserts the migrated result (see `test_storage.py`).
+15. Flow changes on code paths that differ by core version
+    (`_HAS_CONDITIONAL_FORM_FIELDS`) must keep both paths working: pytest
+    covers the harness' core, `tests/smoke_latest_ha.py` the newest core.
+16. Lint before pushing: `ruff check --select F,E9,B custom_components tests`.
+17. CI (`.github/workflows/validate.yaml`) must be green: decoder tests,
+    integration tests, smoke test on latest HA, hassfest, HACS.
+
+### 10.4 Docs and description
+
+18. Update in the same PR: this file (if architecture/invariants change),
+    `ARCHITECTURE.md` (German), `README.md` (user-facing behavior) and
+    `CHANGELOG.md` (entry under the top "unreleased" heading; anything a user
+    must know before updating goes under **Upgrade notes**).
+19. PR description sections: **Summary**, **Why** (issue link), **How**,
+    **Tests** (what was run, incl. hardware if any), **Upgrade impact**
+    (storage/entry version, fingerprints, changed defaults — or "none").
+20. The maintainer bumps `manifest.json` `version` when releasing; PRs don't.
+
+### 10.5 Commits
+
+21. Imperative subject ≤ 72 chars, body explains *why*.
+22. **No `Co-Authored-By` or other AI attribution trailers** in commit
+    messages (maintainer preference).
+
+## 11. Developing a new protocol / decoder (mandatory procedure)
+
+Most remotes need **no** protocol work: raw record/replay works for every
+fixed-code remote. Protocol work only improves decoding (display, jitter-immune
+fingerprints, manual entry). Do it in a `decoder/<name>` PR, nothing else in it.
+
+### 11.1 Collect real data first
+
+1. Capture with ESPHome `remote_receiver` (`dump: raw`), noting the receiver
+   settings (`idle`, `filter`, `tolerance`, `buffer_size`) and frequency.
+2. At least **3 presses each of ≥ 2 different buttons**; for rotating remotes,
+   ≥ 2 full cycles of one button.
+3. Record the expected bits/hex from an independent reference (rc-switch
+   library output, rtl_433, the remote's label/manual). A decoder without an
+   independently known expected value is not testable — don't merge it.
+4. Check the capture with the current code first (`rf_analysis.analyze`):
+   often it already decodes, or only a threshold is off.
+
+### 11.2 Choose the smallest change
+
+In this order of preference:
+
+1. **New rc-switch timing profile** → one line in `RC_PROTOCOLS` (+ the
+   `rc_protocol` description strings listing supported protocols).
+2. **Threshold/analysis fix** (frame gap, base unit) in `rf_analysis.py`.
+3. **New structural decoder** in `decoders.py` — only for a genuinely new
+   encoding scheme, not for one remote brand.
+
+### 11.3 Decoder contract
+
+- Signature `_decode_x(ctx: FrameContext) -> DecodedFrame | None`, pure.
+- Return `None` unless the frame **cleanly** matches; a false positive poisons
+  fingerprints of other remotes. Reject on ambiguous timing ratios.
+- Docstring documents the waveform (marks/spaces per bit in units of T, sync,
+  bit order, **polarity** — which pulse means 1).
+- Register in `DECODERS`; order = priority, most restrictive first. Justify the
+  position in the PR.
+- Add an `ENCODINGS[...]` label (en + de).
+- If the encoding can be generated from bits, add an encoder for manual entry.
+
+### 11.4 Tests for a protocol change (all required)
+
+- **Real captures** from 11.1 with the expected bits (like the EV1527 and
+  SURNICE P4 cases): `encoding`, `bits`, `bit_count`, `protocol_guess`.
+- **Synthetic round trip** encode → decode at several pulse lengths and with
+  timing jitter (±10 %), checking bits and reported pulse length.
+- **Frame splitting**: multi-frame captures split into the right frame count;
+  long in-frame spaces are not mistaken for gaps.
+- **No regressions / no false positives**: all existing cases, the golden
+  set and `NOISE` still decode as before (unless the PR intentionally
+  changes them — see 11.5).
+- **Matching**: for remotes with sibling codes a few bits apart, check the
+  Hamming distances against `_MATCH_BIT_TOLERANCE`; add an integration test
+  with `receive()` if matching behavior is affected.
+
+### 11.5 If existing decodes change
+
+If any golden fingerprint in `tests/test_decoders.py` (section 10) changes:
+
+1. Bump `rf_analysis.DECODER_REVISION` by one and add a history line next to
+   it (what changed, PR number).
+2. Update `GOLDEN_REVISION` and the golden values in the same commit.
+3. Add a storage test with commands decoded the old way (like
+   `test_migrates_1_1_store_and_redecodes_legacy_codes`) asserting the new
+   fingerprint and that receiving the signal matches again.
+4. Add a CHANGELOG upgrade note (displayed hex/bits change, re-decode happens
+   once on start).
+
+Never change the `fingerprint()` hash scheme or `STORED_DECODE_KEYS` without
+the same procedure.
+
+### 11.6 Docs
+
+Update the decoder table (section 4 here and README "Protocol detection") and
+the CHANGELOG.
+
+## 12. Repo / workflow notes
+
+- Published at `github.com/Gifford47/rf_device_manager`. On the maintainer's
+  Windows machine, Git over HTTPS needs `git config http.sslBackend schannel`
+  (corporate TLS).
 - Brand images live in `custom_components/rf_device_manager/brand/` (local
   brand images, supported since HA 2026.3 — no home-assistant/brands PR).
   Files: `icon.png` 256², `icon@2x.png` 512², `logo.png`/`logo@2x.png`
   (128/256 px high, landscape), `dark_logo.png`/`dark_logo@2x.png`. Only these
   filenames (plus `dark_icon*.png`) are served by HA; missing ones fall back
   (`logo` → `icon`, `dark_*` → light variant).
-- `settings.json` in the repo root is local Claude Code permissions — gitignored,
-  not part of the integration.
+- `settings.json` in the repo root is local Claude Code permissions —
+  gitignored, not part of the integration.
+- `pytest.ini` restricts pytest to `tests/integration`; the `tests/test_*.py`
+  files are standalone scripts (they run at import), not pytest modules.
 
-## Known hardware caveats (not integration bugs)
+## 13. Known hardware caveats (not integration bugs)
 
 - Stock Sonoff RF Bridge routes the radio through the EFM8, not the ESP GPIOs;
   `remote_transmitter` needs the direct/Portisch mod and
   `carrier_duty_percent: 100%` to actually transmit.
 - `Buffer overflow` in ESPHome logs = receiver overloaded; raise `idle`, add
   `filter:` and `buffer_size:` on the `remote_receiver`.
-- Rolling-code remotes (KeeLoq, Somfy RTS) change their code each press —
-  record/replay cannot work by design.
+- True rolling-code remotes (KeeLoq, Somfy RTS) change their code each press
+  with authentication — record/replay cannot work by design. Remotes that
+  cycle through a **fixed** set of codes are supported via command variants.

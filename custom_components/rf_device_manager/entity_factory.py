@@ -156,9 +156,16 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
             "rf_code_id": code.id,
             # Per-command protocol summary, e.g.
             # "open": "Space distance (EV1527/PT2262-style) · 0x… (63 bit)"
+            # Preserve the existing single-summary attribute for consumers;
+            # expose every learned variant separately below.
             "commands": {
-                slot: command.protocol_summary()
-                for slot, command in sorted(code.commands.items())
+                slot: variants[0].protocol_summary()
+                for slot, variants in sorted(code.commands.items())
+                if variants
+            },
+            "command_variants": {
+                slot: [command.protocol_summary() for command in variants]
+                for slot, variants in sorted(code.commands.items())
             },
         }
         if code.description:
@@ -223,14 +230,17 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         if code is None:
             return
         slots = [
-            (slot, command.fingerprint, command.extra.get("bits"))
-            for slot, command in code.commands.items()
+            (slot, index, command.fingerprint, command.extra.get("bits"))
+            for slot, variants in code.commands.items()
+            for index, command in enumerate(variants)
             if command.fingerprint or command.extra.get("bits")
         ]
         if not slots:
             return
         matcher = get_domain_data(self.hass).rf_manager.matcher
-        self._matcher_unsub = matcher.async_register(slots, self._handle_received)
+        self._matcher_unsub = matcher.async_register(
+            slots, self._handle_received, group=code.device_id
+        )
 
     @callback
     def _async_unregister_matcher(self) -> None:
@@ -240,8 +250,10 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
             self._matcher_unsub = None
 
     @callback
-    def _handle_received(self, slot: str, signal: CapturedSignal) -> None:
-        """Handle an externally received code matching one of our slots."""
+    def _handle_received(
+        self, slot: str, signal: CapturedSignal, variant_index: int
+    ) -> None:
+        """Handle an externally received code matching one command variant."""
         code = self.code
         if code is None or not code.enabled:
             return
@@ -251,8 +263,30 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         if now - self._recv_debounce.get(slot, 0.0) < RECV_DEBOUNCE_S:
             return  # a repeated frame of the same press
         self._recv_debounce[slot] = now
+        variants = code.commands.get(slot, [])
+        variant_count = len(variants)
+        get_domain_data(self.hass).rf_manager.sync_variant(
+            code.id, slot, variant_index, variant_count
+        )
+        if variant_count > 1:
+            next_variant = (variant_index + 1) % variant_count
+            sync_detail = (
+                f"next send synchronized to variant "
+                f"{next_variant + 1}/{variant_count}"
+            )
+        elif variant_count == 1:
+            sync_detail = "single variant; no rotation needed"
+        else:
+            sync_detail = "no variants remain; rotation not synchronized"
         _LOGGER.debug(
-            "RF match on %s: slot %s (%s)", self.entity_id, slot, signal.fingerprint
+            "Received RF command for entity %s, slot %s: variant %d/%d, "
+            "fingerprint %s; %s",
+            self.entity_id,
+            slot,
+            variant_index + 1,
+            variant_count,
+            signal.fingerprint or "n/a",
+            sync_detail,
         )
         self.hass.bus.async_fire(
             EVENT_CODE_RECEIVED,
@@ -296,9 +330,10 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
     # ------------------------------------------------------------------
 
     def _command(self, slot: str) -> RFCommandData | None:
-        """Return the command stored in a slot, if any."""
+        """Return the first command variant when a slot is configured."""
         code = self.code
-        return code.commands.get(slot) if code else None
+        variants = code.commands.get(slot) if code else None
+        return variants[0] if variants else None
 
     async def _async_send_slot(self, slot: str, repeat: int | None = None) -> None:
         """Transmit the command of a slot through the device transmitter.
@@ -307,8 +342,9 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
             HomeAssistantError: If the slot is not configured or sending
                 fails.
         """
-        command = self._command(slot)
-        if command is None:
+        code = self.code
+        variants = code.commands.get(slot) if code else None
+        if not variants:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="slot_not_configured",
@@ -320,8 +356,14 @@ class RFCodeEntity(CoordinatorEntity[RFDeviceCoordinator], RestoreEntity):
         # Ignore our own transmission if the receiver picks it up.
         self._suppress_receive_until = self.hass.loop.time() + SELF_ECHO_SUPPRESS_S
         rf_manager = get_domain_data(self.hass).rf_manager
-        await rf_manager.async_send(
-            command, self.rf_device.transmitter, repeat=repeat
+        assert code is not None
+        await rf_manager.async_send_variants(
+            variants,
+            self.rf_device.transmitter,
+            code_id=code.id,
+            slot=slot,
+            context=f"entity {self.entity_id}",
+            repeat=repeat,
         )
 
 

@@ -18,14 +18,16 @@
           "transmitter": "RF-Sender",
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
-          "default_repeat": "Standard-Wiederholungen"
+          "default_repeat": "Standard-Wiederholungen",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
         },
         "data_description": {
           "name": "Wird als Gerätename in Home Assistant angezeigt.",
           "transmitter": "Die radio_frequency-Entität (z. B. ein ESPHome IR/RF-Proxy), über die Codes dieses Geräts gesendet werden.",
           "frequency_preset": "Trägerfrequenz der Fernbedienung des Geräts.",
           "frequency_custom": "Wird nur verwendet, wenn oben 'Eigene Frequenz…' gewählt ist.",
-          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden."
+          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden. 0 sendet einmal; 7 (Standard) entspricht einem kurzen Tastendruck.",
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       },
       "duplicate_device": {
@@ -44,7 +46,11 @@
           "transmitter": "RF-Sender",
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
-          "default_repeat": "Standard-Wiederholungen"
+          "default_repeat": "Standard-Wiederholungen",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       }
     },
@@ -68,6 +74,7 @@
         "description": "Verwalte Einstellungen und RF-Codes dieses Geräts.",
         "menu_options": {
           "device_settings": "Geräteeinstellungen",
+          "add_buttons": "Tasten hinzufügen (mehrere auf einmal anlernen)",
           "add_code": "Neuen RF-Code hinzufügen",
           "manage_codes": "RF-Codes verwalten"
         }
@@ -81,7 +88,11 @@
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
           "default_repeat": "Standard-Wiederholungen",
-          "enabled": "Gerät aktiviert"
+          "enabled": "Gerät aktiviert",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       },
       "add_code": {
@@ -93,6 +104,18 @@
           "entity_type": "Entitätstyp",
           "icon": "Icon",
           "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        }
+      },
+      "add_buttons": {
+        "title": "Tasten hinzufügen",
+        "description": "Ein Tastenname pro Zeile (oder kommagetrennt). Jeder wird zu einer zustandslosen Tasten-Entität auf **{device_name}**.\n\nDanach wartet der Assistent nacheinander auf jede Taste: auf der echten Fernbedienung drücken, Ergebnis prüfen, speichern – dann lauscht er auf die nächste. Tasten werden sofort gespeichert.",
+        "data": {
+          "button_names": "Tastennamen",
+          "icon": "Symbol (alle Tasten)",
+          "repeat": "Wiederholungen (überschreibt Gerätestandard)"
+        },
+        "data_description": {
+          "button_names": "Zum Beispiel:\nAus\nStufe 1\nStufe 2"
         }
       },
       "type_settings": {
@@ -145,34 +168,44 @@
         }
       },
       "slot_learn_done": {
-        "title": "Signal auswählen",
-        "description": "Für **{slot}** wurden mehrere unterschiedliche Signale empfangen:\n\n{signals}\n\nDie Liste ist nach Empfangshäufigkeit sortiert – der oberste Eintrag ist meist der richtige. Wähle das Signal aus, das zu deinem Tastendruck gehört; auf der nächsten Seite kannst du es testen und speichern.",
+        "title": "Signale auswählen",
+        "description": "Für **{slot}** wurden mehrere unterschiedliche Signale empfangen:\n\n{signals}\n\nDie am häufigsten empfangenen Kandidaten werden beibehalten, um Störungen auszusortieren, und anschließend in der Reihenfolge ihres ersten Empfangs angezeigt. Die Häufigkeit (×N) zeigt, wie oft jedes Signal empfangen wurde. Signale, die oft genug für einen echten Tastendruck empfangen wurden, sind vorausgewählt; entferne den Haken bei allen, die nicht zu dieser Taste gehören. Die angezeigte Reihenfolge wird zum Senden verwendet.",
         "data": {
-          "signal": "Empfangenes Signal"
+          "signals": "Zu speichernde Signale"
         }
       },
       "slot_manual": {
         "title": "Manuelle Eingabe: {slot}",
-        "description": "Gib die RF-Daten für **{slot}** ({position}) ein. Fülle nur das Feld aus, das zum gewählten Format passt.",
+        "description": "Gib den Befehl für **{slot}** ({position}) ein.",
         "data": {
           "input_format": "Datenformat",
-          "raw_timings": "Roh-Timings (µs, z. B. [350, -1050, …])",
-          "b0_code": "Tasmota-RfRaw-Code (AA B0 … 55)",
-          "tristate_code": "Tri-State-Code (0/1/F)",
-          "binary_code": "Binärcode (0/1)",
-          "pronto_code": "Pronto-Hex-Code",
+          "format_help_raw": "Hinweis",
+          "format_help_b0": "Hinweis",
+          "format_help_tristate": "Hinweis",
+          "format_help_binary": "Hinweis",
+          "format_help_pronto": "Hinweis",
+          "variants_raw": "Kommandovarianten",
+          "variants_b0": "Kommandovarianten",
+          "variants_tristate": "Kommandovarianten",
+          "variants_binary": "Kommandovarianten",
+          "variants_pronto": "Kommandovarianten",
           "pulse_length": "Pulslänge (µs)",
           "rc_protocol": "rc-switch-Protokoll",
-          "repeat": "Wiederholungen"
+          "repeat": "Zusätzliche Wiederholungen"
+        },
+        "data_description": {
+          "pulse_length": "Basis-Pulsdauer zur Erzeugung der Timings. Leer lassen, um den Standard des gewählten Protokolls zu verwenden.",
+          "rc_protocol": "Legt das rc-switch-Timingmuster für Binär- und Tri-State-Eingaben fest (Protokolle 1–5, 7 und 8). Die Trägerfrequenz wird damit nicht festgelegt.",
+          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 sendet den Befehl genau einmal."
         }
       },
       "slot_confirm": {
         "title": "Befehl bestätigen",
-        "description": "**{slot}** ({position}) für „{code_name}“\n\n{summary}\nQuelle: {source}\nTimings: `{timings_preview}`\n\n{test_note}",
+        "description": "**{slot}** ({position}) für „{code_name}“\n\n{variant_details}\n\nZu speichernde Kommandovarianten: {variant_count}. Die Reihenfolge bleibt erhalten. Beim Test wird nur die erste Kommandovariante gesendet.\n\n{test_note}",
         "menu_options": {
           "slot_accept": "Befehl speichern",
-          "slot_test": "Test senden",
-          "slot_retry": "Verwerfen und erneut"
+          "slot_test": "Erste Kommandovariante testen",
+          "slot_retry": "Verwerfen und erneut versuchen"
         }
       },
       "save_code": {
@@ -213,7 +246,7 @@
       },
       "code_relearn": {
         "title": "Befehl neu anlernen",
-        "description": "Welchen Befehl von „{code_name}“ möchtest du neu anlernen?",
+        "description": "Welchen Befehl von „{code_name}“ möchtest du neu anlernen? Dabei werden alle bisher gespeicherten Kommandovarianten dieses Befehls ersetzt.",
         "data": {
           "slot": "Befehl"
         }
@@ -228,6 +261,34 @@
       "code_delete": {
         "title": "RF-Code löschen",
         "description": "„{code_name}“ ({entity_type}) löschen? Die Entität und alle angelernten Befehle werden dauerhaft entfernt."
+      },
+      "slot_manual_data": {
+        "title": "Manuelle Eingabe: {slot}",
+        "description": "Gib die Befehlsdaten für **{slot}** ({position}) ein.",
+        "data": {
+          "format_help_raw": "Hinweis",
+          "variants_raw": "Kommandovarianten",
+          "format_help_b0": "Hinweis",
+          "variants_b0": "Kommandovarianten",
+          "format_help_tristate": "Hinweis",
+          "variants_tristate": "Kommandovarianten",
+          "format_help_binary": "Hinweis",
+          "variants_binary": "Kommandovarianten",
+          "format_help_pronto": "Hinweis",
+          "variants_pronto": "Kommandovarianten",
+          "pulse_length": "Pulslänge (µs)",
+          "rc_protocol": "rc-switch-Protokoll",
+          "repeat": "Zusätzliche Wiederholungen"
+        },
+        "data_description": {
+          "pulse_length": "Basis-Pulsdauer zur Erzeugung der Timings. Leer lassen, um den Standard des gewählten Protokolls zu verwenden.",
+          "rc_protocol": "Legt das rc-switch-Timingmuster für Binär- und Tri-State-Eingaben fest (Protokolle 1–5, 7 und 8). Die Trägerfrequenz wird damit nicht festgelegt.",
+          "repeat": "Anzahl zusätzlicher Übertragungen nach der ersten. Leer lassen, um die Einstellung des RF-Codes/Geräts zu übernehmen; 0 sendet den Befehl genau einmal."
+        }
+      },
+      "bulk_done": {
+        "title": "Tasten hinzugefügt",
+        "description": "{saved_count} von {total} Tasten hinzugefügt: {saved}\n\nÜbersprungen: {skipped}"
       }
     },
     "progress": {
@@ -248,7 +309,12 @@
       "no_transmitters": "Keine RF-Sender gefunden.",
       "transmitter_not_found": "Diese Sender-Entität existiert nicht (mehr).",
       "unsupported_frequency": "Der gewählte Sender unterstützt diese Frequenz nicht.",
-      "frequency_required": "Bitte eine eigene Frequenz in Hz eingeben."
+      "frequency_required": "Bitte eine eigene Frequenz in Hz eingeben.",
+      "select_signal_required": "Wähle mindestens ein empfangenes Signal aus.",
+      "manual_variant_required": "Füge mindestens eine nicht leere Kommandovariante hinzu und entferne leere Einträge.",
+      "invalid_input_format": "Wähle ein unterstütztes RF-Datenformat.",
+      "invalid_button_names": "Bitte mindestens einen Tastennamen eingeben.",
+      "duplicate_button_names": "Tastennamen müssen auf diesem Gerät eindeutig sein (inkl. vorhandener Codes)."
     },
     "abort": {
       "no_codes": "Dieses Gerät hat noch keine RF-Codes."
@@ -275,11 +341,11 @@
     },
     "input_format": {
       "options": {
-        "raw": "Roh-Timings (µs)",
-        "b0": "Tasmota RfRaw (B0/B1)",
-        "tristate": "Tri-State (PT2262/EV1527)",
-        "binary": "Binär + rc-switch-Protokoll",
-        "pronto": "Pronto-Hex"
+        "raw": "Roh-Timings (µs, z. B. [350, -1050, …])",
+        "b0": "Tasmota-RfRaw-Code (AA B0 … 55)",
+        "tristate": "Tri-State-Code (0/1/F)",
+        "binary": "Binärcode (0/1)",
+        "pronto": "Pronto-Hex-Code"
       }
     },
     "switch_device_class": {
@@ -322,6 +388,39 @@
         "slider": "Schieberegler",
         "box": "Eingabefeld"
       }
+    },
+    "manual_format_raw": {
+      "options": {
+        "value": "Gib vorzeichenbehaftete Timing-Dauern in Mikrosekunden ein. Mehrzeilige Eingabe wird unterstützt."
+      }
+    },
+    "manual_format_b0": {
+      "options": {
+        "value": "Gib einen vollständigen Tasmota-/Portisch-RfRaw-B0- oder B1-Code ein."
+      }
+    },
+    "manual_format_tristate": {
+      "options": {
+        "value": "Gib einen PT2262-/EV1527-Code ein, der nur 0, 1 und F enthält."
+      }
+    },
+    "manual_format_binary": {
+      "options": {
+        "value": "Gib eine Bitfolge aus 0 und 1 ein."
+      }
+    },
+    "manual_format_pronto": {
+      "options": {
+        "value": "Gib einen vollständigen Pronto-Hex-Code ein."
+      }
+    },
+    "manual_command_variants": {
+      "fields": {
+        "value": {
+          "name": "Kommandovariante",
+          "description": "Gib einen vollständigen Befehl im ausgewählten Format ein."
+        }
+      }
     }
   },
   "services": {
@@ -343,7 +442,7 @@
         },
         "repeat": {
           "name": "Wiederholungen",
-          "description": "Zusätzliche Wiederholungen; überschreibt den gespeicherten Wert."
+          "description": "Zusätzliche Wiederholungen (0 = einmal senden); überschreibt den gespeicherten Wert."
         }
       }
     },
@@ -385,11 +484,11 @@
         },
         "rc_protocol": {
           "name": "rc-switch-Protokoll",
-          "description": "Timing-Profil für Tri-State-/Binärcodes (1–8)."
+          "description": "Timing-Profil für Tri-State-/Binärcodes (1–5, 7 und 8)."
         },
         "repeat": {
           "name": "Wiederholungen",
-          "description": "Zusätzliche Wiederholungen der Übertragung."
+          "description": "Zusätzliche Wiederholungen der Übertragung (0 = einmal senden)."
         }
       }
     },

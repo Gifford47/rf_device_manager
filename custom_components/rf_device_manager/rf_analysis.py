@@ -24,9 +24,17 @@ from collections import Counter
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
-from .const import IDLE_TRIM_US, MIN_SIGNAL_PULSES
+from .const import (
+    IDLE_TRIM_US,
+    MIN_SIGNAL_PULSES,
+    PROTOCOL_B0,
+    PROTOCOL_BINARY,
+    PROTOCOL_PRONTO,
+    PROTOCOL_RAW,
+    PROTOCOL_TRISTATE,
+)
 from .decoders import (  # noqa: F401  (re-exported for flows/services)
     RC_PROTOCOLS,
     TRISTATE_TO_BITS,
@@ -34,10 +42,11 @@ from .decoders import (  # noqa: F401  (re-exported for flows/services)
     encoding_label,
 )
 
-# Splitting captures into frames: a space terminates a frame when it clearly
-# exceeds the regular pulse population (95th percentile based, with a floor).
-# Real-world sync gaps can be as short as ~2.5 ms (e.g. EV1527 remotes).
-_FRAME_GAP_MIN_US = 2_400
+# Frame splitting uses an adaptive threshold with an absolute floor:
+# max(_FRAME_GAP_MIN_US, _FRAME_GAP_FACTOR * P95(all pulse durations)).
+# The 2,000 µs floor admits RC-Switch P4's nominal 2.28 ms sync LOW;
+# the adaptive term protects longer in-frame spaces, e.g. P8's 3.2 ms data LOW.
+_FRAME_GAP_MIN_US = 2_000
 _FRAME_GAP_FACTOR = 1.7
 
 # Quantization limits
@@ -184,6 +193,147 @@ def same_code(analysis_a: dict[str, Any], analysis_b: dict[str, Any]) -> bool:
         analysis_a.get("dominant_frame") or [],
         analysis_b.get("dominant_frame") or [],
     )
+
+
+class _LearnCapture(Protocol):
+    """Minimal capture shape needed to group learned signals."""
+
+    received_at: float
+    analysis: dict[str, Any]
+
+
+_LearnCaptureT = TypeVar("_LearnCaptureT", bound=_LearnCapture)
+
+
+def cluster_learn_signals(
+    signals: list[_LearnCaptureT], max_signals: int
+) -> list[_LearnCaptureT]:
+    """Group equivalent captures, rank by frequency, and return in first-seen order.
+
+    Repeated frames and timing jitter are clustered so a single physical code
+    appears only once. Candidates are ranked by reception count to filter
+    noise, but the retained candidates are returned in the order their codes
+    first appeared. Some remotes cycle through a fixed sequence of codes, so
+    their first-reception order is meaningful and must survive learning.
+    """
+    clusters: list[list[_LearnCaptureT]] = []
+    for signal in signals:
+        for cluster in clusters:
+            if same_code(cluster[0].analysis, signal.analysis):
+                cluster.append(signal)
+                break
+        else:
+            clusters.append([signal])
+
+    ranked: list[tuple[float, _LearnCaptureT]] = []
+    for cluster in clusters:
+        representative = max(
+            cluster,
+            key=lambda sig: (
+                sig.analysis.get("times_seen", 1),
+                sig.analysis.get("frame_length", 0),
+            ),
+        )
+        representative.analysis["times_seen"] = sum(
+            sig.analysis.get("times_seen", 1) for sig in cluster
+        )
+        ranked.append((min(signal.received_at for signal in cluster), representative))
+
+    # Keep the most frequently received candidates (to suppress one-off
+    # interference), then restore their chronological first-seen order.
+    ranked.sort(
+        key=lambda item: (
+            item[1].analysis.get("times_seen", 1),
+            item[1].analysis.get("frame_length", 0),
+        ),
+        reverse=True,
+    )
+    selected = ranked[:max_signals]
+    selected.sort(key=lambda item: item[0])
+    return [signal for _, signal in selected]
+
+
+# ---------------------------------------------------------------------------
+# Decoder revision (re-decoding of stored commands)
+# ---------------------------------------------------------------------------
+
+# Bump this whenever a change to ``decoders.py`` or to the analysis pipeline
+# here (frame splitting, base-unit estimation, fingerprinting) can change the
+# decoded ``bits``/``fingerprint`` of an *existing* capture. On the next start
+# the store re-decodes every stored command from its raw timings, so learned
+# codes keep matching received signals. ``tests/test_decoders.py`` holds
+# golden fingerprints that fail when decoding changes without a bump.
+#
+# 1: initial decoders (up to 1.1.x)
+# 2: RC-Switch P4 2.28 ms sync gap splits frames; P8 bit polarity fixed
+DECODER_REVISION = 2
+
+# Decode results copied into ``RFCommandData.extra`` (learned and manual).
+STORED_DECODE_KEYS = (
+    "encoding",
+    "bits",
+    "bit_count",
+    "hex",
+    "tristate",
+    "protocol_guess",
+    "frame_count",
+)
+
+
+def stored_decode(timings: list[int]) -> tuple[str | None, dict[str, Any], int | None]:
+    """Decode stored timings into ``(fingerprint, extra, base_unit_us)``.
+
+    ``extra`` holds exactly the ``STORED_DECODE_KEYS`` the current decoders
+    produce for these timings (absent keys mean "not decodable").
+    """
+    analysis = analyze(timings)
+    extra = {key: analysis[key] for key in STORED_DECODE_KEYS if key in analysis}
+    return analysis.get("fingerprint"), extra, analysis.get("base_unit_us")
+
+
+# A learned candidate is preselected as a command variant when it was received
+# at least this often, relative to the most frequently received candidate
+# (and at least twice). Real button presses repeat their frame many times;
+# interference and corrupted receptions are typically seen once.
+_PRESELECT_MIN_RATIO = 0.25
+_PRESELECT_MIN_TIMES_SEEN = 2
+
+
+def preselected_signal_indices(analyses: list[dict[str, Any]]) -> list[int]:
+    """Return the indices of learned candidates to preselect as variants.
+
+    Remotes that cycle through several codes per button produce several
+    strong candidates in one learning session; all of them should be stored.
+
+    * If any candidate was received more than once, preselect every candidate
+      received at least ``max(2, 25 % of the strongest)`` times; one-off
+      captures (noise, neighbouring devices, corrupted frames) stay
+      unselected.
+    * If every candidate was received exactly once (receivers whose ``idle``
+      setting packs a whole button press into one capture), counts carry no
+      information: preselect the candidates that decode with the same
+      encoding and bit length as the first one.
+
+    At least one candidate is always preselected.
+    """
+    if not analyses:
+        return []
+    counts = [int(analysis.get("times_seen", 1) or 1) for analysis in analyses]
+    strongest = max(counts)
+    if strongest >= _PRESELECT_MIN_TIMES_SEEN:
+        threshold = max(_PRESELECT_MIN_TIMES_SEEN, strongest * _PRESELECT_MIN_RATIO)
+        return [index for index, count in enumerate(counts) if count >= threshold]
+
+    reference = analyses[0]
+    shape = (reference.get("encoding"), reference.get("bit_count"))
+    if not reference.get("bits") or shape[0] is None:
+        return [0]
+    return [
+        index
+        for index, analysis in enumerate(analyses)
+        if analysis.get("bits")
+        and (analysis.get("encoding"), analysis.get("bit_count")) == shape
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +512,6 @@ def describe_signal(analysis: dict[str, Any], language: str = "en") -> str:
     )
     if (frames := analysis.get("frame_count", 0)) > 1:
         parts.append(f"{frames} Frames")
-    if (variants := analysis.get("variants", 1)) > 1:
-        parts.append(f"{variants} Varianten" if german else f"{variants} variants")
     return " · ".join(parts)
 
 
@@ -618,3 +766,64 @@ def parse_pronto(text: str) -> tuple[list[int], int]:
     if len(timings) < MIN_SIGNAL_PULSES:
         raise RFInputError("too_few_pulses", "Pronto burst too short")
     return timings, carrier_hz
+
+
+
+def parse_manual_variants(
+    input_format: str,
+    values: list[str],
+    *,
+    pulse_length: int | None = None,
+    protocol: int = 1,
+) -> list[tuple[list[int], str | None]]:
+    """Parse an ordered list of manually supplied variants.
+
+    Each input value is one complete command in the selected format. The
+    returned list preserves entry order and contains (timings, code_text)
+    pairs ready for conversion into RFCommandData objects.
+    """
+    if not values:
+        raise RFInputError(
+            "manual_variant_required", "At least one command variant is required"
+        )
+
+    if input_format not in {
+        PROTOCOL_RAW,
+        PROTOCOL_B0,
+        PROTOCOL_TRISTATE,
+        PROTOCOL_BINARY,
+        PROTOCOL_PRONTO,
+    }:
+        raise RFInputError(
+            "invalid_input_format", f"Unsupported input format: {input_format!r}"
+        )
+
+    parsed: list[tuple[list[int], str | None]] = []
+    for index, raw_value in enumerate(values, start=1):
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise RFInputError(
+                "manual_variant_required", f"Variant {index} is empty"
+            )
+
+        code_text: str | None = None
+        if input_format == PROTOCOL_RAW:
+            timings = parse_timings_text(raw_value)
+        elif input_format == PROTOCOL_B0:
+            code_text = raw_value.strip()
+            timings = parse_tasmota_rfraw(code_text)
+        elif input_format == PROTOCOL_TRISTATE:
+            code_text = raw_value.strip().upper()
+            timings = encode_tristate(
+                code_text, pulse_length=pulse_length, protocol=protocol
+            )
+        elif input_format == PROTOCOL_BINARY:
+            code_text = raw_value.strip()
+            timings = encode_binary(
+                code_text, pulse_length=pulse_length, protocol=protocol
+            )
+        else:  # PROTOCOL_PRONTO
+            code_text = raw_value.strip()
+            timings, _carrier = parse_pronto(code_text)
+        parsed.append((timings, code_text))
+
+    return parsed

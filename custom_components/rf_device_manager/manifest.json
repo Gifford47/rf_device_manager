@@ -11,5 +11,5 @@
   "issue_tracker": "https://github.com/Gifford47/rf_device_manager/issues",
   "loggers": ["custom_components.rf_device_manager"],
   "requirements": [],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

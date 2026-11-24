@@ -43,6 +43,7 @@ from .const import (
     CONF_TRISTATE_CODE,
     DEFAULT_FREQUENCY,
     DEFAULT_LEARN_TIMEOUT,
+    DEFAULT_REPEAT,
     DOMAIN,
     SERVICE_LEARN_CODE,
     SERVICE_SEND_CODE,
@@ -78,7 +79,7 @@ SEND_RAW_SCHEMA = vol.Schema(
         vol.Optional(CONF_RC_PROTOCOL, default=1): vol.All(
             vol.Coerce(int), vol.In(sorted(rf_analysis.RC_PROTOCOLS))
         ),
-        vol.Optional(ATTR_REPEAT, default=0): vol.All(
+        vol.Optional(ATTR_REPEAT, default=DEFAULT_REPEAT): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=50)
         ),
     }
@@ -133,15 +134,23 @@ async def _async_handle_send_code(call: ServiceCall) -> None:
             translation_placeholders={"code": call.data[ATTR_CODE]},
         )
     slot = call.data.get(ATTR_COMMAND) or code.primary_slot()
-    command = code.commands.get(slot) if slot else None
-    if command is None:
+    variants = code.commands.get(slot) if slot else None
+    if not slot or not variants:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
             translation_key="slot_not_configured",
             translation_placeholders={"slot": slot or "?", "name": code.name},
         )
-    await domain_data.rf_manager.async_send(
-        command, device.transmitter, repeat=call.data.get(ATTR_REPEAT)
+    await domain_data.rf_manager.async_send_variants(
+        variants,
+        device.transmitter,
+        code_id=code.id,
+        slot=slot,
+        context=(
+            f"RF device {device.name!r}, code {code.name!r} "
+            "(send_code service)"
+        ),
+        repeat=call.data.get(ATTR_REPEAT),
     )
 
 

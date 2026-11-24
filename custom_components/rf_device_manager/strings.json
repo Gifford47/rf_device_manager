@@ -18,14 +18,16 @@
           "transmitter": "RF transmitter",
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
-          "default_repeat": "Default repeats"
+          "default_repeat": "Default repeats",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
         },
         "data_description": {
           "name": "Shown as the device name in Home Assistant.",
           "transmitter": "The radio_frequency entity (e.g. an ESPHome IR/RF proxy) used to send codes for this device.",
           "frequency_preset": "Carrier frequency of the device's remote control.",
           "frequency_custom": "Only used when 'Custom frequency…' is selected above.",
-          "default_repeat": "How many extra times commands are repeated when sending."
+          "default_repeat": "How many extra times commands are repeated when sending. 0 sends once; 7 (default) matches a short button press.",
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       },
       "duplicate_device": {
@@ -44,7 +46,11 @@
           "transmitter": "RF transmitter",
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
-          "default_repeat": "Default repeats"
+          "default_repeat": "Default repeats",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       }
     },
@@ -68,6 +74,7 @@
         "description": "Manage settings and RF codes of this device.",
         "menu_options": {
           "device_settings": "Device settings",
+          "add_buttons": "Add buttons (learn several at once)",
           "add_code": "Add new RF code",
           "manage_codes": "Manage RF codes"
         }
@@ -81,7 +88,11 @@
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
           "default_repeat": "Default repeats",
-          "enabled": "Device enabled"
+          "enabled": "Device enabled",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       },
       "add_code": {
@@ -93,6 +104,18 @@
           "entity_type": "Entity type",
           "icon": "Icon",
           "repeat": "Repeats (overrides device default)"
+        }
+      },
+      "add_buttons": {
+        "title": "Add buttons",
+        "description": "One button name per line (or comma separated). Each becomes a stateless button entity on **{device_name}**.\n\nAfter you submit, the wizard listens for each button in turn: press it on the real remote, check the result, save, and the next one starts listening. Buttons are saved as you go.",
+        "data": {
+          "button_names": "Button names",
+          "icon": "Icon (all buttons)",
+          "repeat": "Repeats (overrides device default)"
+        },
+        "data_description": {
+          "button_names": "For example:\nOff\nSpeed 1\nSpeed 2"
         }
       },
       "type_settings": {
@@ -145,33 +168,43 @@
         }
       },
       "slot_learn_done": {
-        "title": "Select signal",
-        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe list is sorted by how often each signal was received – the top entry is usually the right one. Select the one matching your button press; the next screen lets you test it and save it.",
+        "title": "Select signals",
+        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe most frequently received candidates are kept to filter out noise, then displayed in the order in which they were first received. The ×N count shows how often each candidate was received. Signals received often enough to be a real button press are preselected; untick any that do not belong to this button. The displayed order becomes the send order.",
         "data": {
-          "signal": "Received signal"
+          "signals": "Signals to save"
         }
       },
       "slot_manual": {
         "title": "Manual entry: {slot}",
-        "description": "Enter the RF data for **{slot}** ({position}). Fill only the field matching the chosen format.",
+        "description": "Enter the command for **{slot}** ({position}).",
         "data": {
           "input_format": "Data format",
-          "raw_timings": "Raw timings (µs, e.g. [350, -1050, …])",
-          "b0_code": "Tasmota RfRaw code (AA B0 … 55)",
-          "tristate_code": "Tri-state code (0/1/F)",
-          "binary_code": "Binary code (0/1)",
-          "pronto_code": "Pronto hex code",
+          "format_help_raw": "Format details",
+          "format_help_b0": "Format details",
+          "format_help_tristate": "Format details",
+          "format_help_binary": "Format details",
+          "format_help_pronto": "Format details",
+          "variants_raw": "Command variants",
+          "variants_b0": "Command variants",
+          "variants_tristate": "Command variants",
+          "variants_binary": "Command variants",
+          "variants_pronto": "Command variants",
           "pulse_length": "Pulse length (µs)",
           "rc_protocol": "rc-switch protocol",
-          "repeat": "Repeats"
+          "repeat": "Additional transmissions"
+        },
+        "data_description": {
+          "pulse_length": "Base pulse duration used to generate timings. Leave blank to use the selected protocol's default.",
+          "rc_protocol": "Selects the rc-switch timing pattern for Binary and Tri-state input (protocols 1–5, 7 and 8). It does not set the carrier frequency.",
+          "repeat": "Number of additional transmissions after the first. Leave blank to inherit the RF code/device setting; 0 sends the command exactly once."
         }
       },
       "slot_confirm": {
         "title": "Confirm command",
-        "description": "**{slot}** ({position}) for “{code_name}”\n\n{summary}\nSource: {source}\nTimings: `{timings_preview}`\n\n{test_note}",
+        "description": "**{slot}** ({position}) for “{code_name}”\n\n{variant_details}\n\nCommand variants to save: {variant_count}. They will be stored in the order shown. Testing sends only the first command variant.\n\n{test_note}",
         "menu_options": {
           "slot_accept": "Save command",
-          "slot_test": "Send test",
+          "slot_test": "Test first command variant",
           "slot_retry": "Discard and retry"
         }
       },
@@ -213,7 +246,7 @@
       },
       "code_relearn": {
         "title": "Learn command again",
-        "description": "Which command of “{code_name}” do you want to learn again?",
+        "description": "Which command of “{code_name}” do you want to learn again? Re-learning replaces all previously stored command variants for that command.",
         "data": {
           "slot": "Command"
         }
@@ -228,6 +261,34 @@
       "code_delete": {
         "title": "Delete RF code",
         "description": "Delete “{code_name}” ({entity_type})? The entity and all learned commands will be removed permanently."
+      },
+      "slot_manual_data": {
+        "title": "Manual entry: {slot}",
+        "description": "Enter the command data for **{slot}** ({position}).",
+        "data": {
+          "format_help_raw": "Format details",
+          "variants_raw": "Command variants",
+          "format_help_b0": "Format details",
+          "variants_b0": "Command variants",
+          "format_help_tristate": "Format details",
+          "variants_tristate": "Command variants",
+          "format_help_binary": "Format details",
+          "variants_binary": "Command variants",
+          "format_help_pronto": "Format details",
+          "variants_pronto": "Command variants",
+          "pulse_length": "Pulse length (µs)",
+          "rc_protocol": "rc-switch protocol",
+          "repeat": "Additional transmissions"
+        },
+        "data_description": {
+          "pulse_length": "Base pulse duration used to generate timings. Leave blank to use the selected protocol's default.",
+          "rc_protocol": "Selects the rc-switch timing pattern for Binary and Tri-state input (protocols 1–5, 7 and 8). It does not set the carrier frequency.",
+          "repeat": "Number of additional transmissions after the first. Leave blank to inherit the RF code/device setting; 0 sends the command exactly once."
+        }
+      },
+      "bulk_done": {
+        "title": "Buttons added",
+        "description": "Added {saved_count} of {total} buttons: {saved}\n\nSkipped: {skipped}"
       }
     },
     "progress": {
@@ -248,7 +309,12 @@
       "no_transmitters": "No RF transmitters found.",
       "transmitter_not_found": "This transmitter entity does not exist (anymore).",
       "unsupported_frequency": "The selected transmitter does not support this frequency.",
-      "frequency_required": "Please enter a custom frequency in Hz."
+      "frequency_required": "Please enter a custom frequency in Hz.",
+      "select_signal_required": "Select at least one received signal.",
+      "manual_variant_required": "Add at least one non-empty command variant and remove any empty entries.",
+      "invalid_input_format": "Select a supported RF data format.",
+      "invalid_button_names": "Enter at least one button name.",
+      "duplicate_button_names": "Button names must be unique on this device (including existing codes)."
     },
     "abort": {
       "no_codes": "This device has no RF codes yet."
@@ -275,11 +341,11 @@
     },
     "input_format": {
       "options": {
-        "raw": "Raw timings (µs)",
-        "b0": "Tasmota RfRaw (B0/B1)",
-        "tristate": "Tri-state (PT2262/EV1527)",
-        "binary": "Binary + rc-switch protocol",
-        "pronto": "Pronto hex"
+        "raw": "Raw timings (µs, e.g. [350, -1050, …])",
+        "b0": "Tasmota RfRaw code (AA B0 … 55)",
+        "tristate": "Tri-state code (0/1/F)",
+        "binary": "Binary code (0/1)",
+        "pronto": "Pronto hex code"
       }
     },
     "switch_device_class": {
@@ -322,6 +388,39 @@
         "slider": "Slider",
         "box": "Input field"
       }
+    },
+    "manual_format_raw": {
+      "options": {
+        "value": "Enter signed timing durations in microseconds. Multiline input is supported."
+      }
+    },
+    "manual_format_b0": {
+      "options": {
+        "value": "Enter a complete Tasmota/Portisch RfRaw B0 or B1 code."
+      }
+    },
+    "manual_format_tristate": {
+      "options": {
+        "value": "Enter a PT2262/EV1527-style code using only 0, 1 and F."
+      }
+    },
+    "manual_format_binary": {
+      "options": {
+        "value": "Enter a bit string containing only 0 and 1."
+      }
+    },
+    "manual_format_pronto": {
+      "options": {
+        "value": "Enter a complete Pronto hexadecimal code."
+      }
+    },
+    "manual_command_variants": {
+      "fields": {
+        "value": {
+          "name": "Command variant",
+          "description": "Enter one complete command in the selected format."
+        }
+      }
     }
   },
   "services": {
@@ -343,7 +442,7 @@
         },
         "repeat": {
           "name": "Repeats",
-          "description": "Extra repetitions; overrides the stored value."
+          "description": "Extra repetitions (0 = send once); overrides the stored value."
         }
       }
     },
@@ -385,11 +484,11 @@
         },
         "rc_protocol": {
           "name": "rc-switch protocol",
-          "description": "Timing profile for tri-state/binary codes (1–8)."
+          "description": "Timing profile for tri-state/binary codes (1–5, 7 and 8)."
         },
         "repeat": {
           "name": "Repeats",
-          "description": "Extra repetitions of the transmission."
+          "description": "Extra repetitions of the transmission (0 = send once)."
         }
       }
     },

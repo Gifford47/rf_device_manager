@@ -15,8 +15,14 @@ MODEL = "Virtual RF device"
 
 STORAGE_KEY = DOMAIN
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 1
+STORAGE_MINOR_VERSION = 3
 STORAGE_SAVE_DELAY = 1.0  # seconds, debounce for Store.async_delay_save
+
+# Command-variant rotation state (next variant per code/slot) is persisted in
+# its own small store, because it changes on every send of a rotating code.
+ROTATION_STORAGE_KEY = f"{DOMAIN}_rotation"
+ROTATION_STORAGE_VERSION = 1
+ROTATION_SAVE_DELAY = 5.0  # seconds; HA flushes pending saves on shutdown
 
 # ---------------------------------------------------------------------------
 # Platforms handled by this integration
@@ -75,6 +81,10 @@ CONF_FREQUENCY = "frequency"
 CONF_FREQUENCY_PRESET = "frequency_preset"
 CONF_FREQUENCY_CUSTOM = "frequency_custom"
 CONF_DEFAULT_REPEAT = "default_repeat"
+# Restart the code sequence of every other command of the device whenever
+# one command is sent or received (remotes that reset a button's rotation
+# as soon as a different button is pressed).
+CONF_ROTATION_RESET = "rotation_reset_on_other"
 CONF_ENABLED = "enabled"
 CONF_DUPLICATE_FROM = "duplicate_from"
 CONF_SOURCE_ENTRY = "source_entry"
@@ -92,6 +102,9 @@ CONF_PRONTO_CODE = "pronto_code"
 CONF_PULSE_LENGTH = "pulse_length"
 CONF_RC_PROTOCOL = "rc_protocol"
 CONF_B0_CODE = "b0_code"
+
+# Bulk button creation
+CONF_BUTTON_NAMES = "button_names"
 
 # Type-specific settings keys
 CONF_HAS_OFF = "has_off"
@@ -155,20 +168,20 @@ FREQUENCY_PRESET_CUSTOM = "custom"
 # ---------------------------------------------------------------------------
 
 DEFAULT_LEARN_TIMEOUT = 30.0  # seconds to wait for the first signal
-LEARN_COLLECT_WINDOW = 4.0  # seconds to keep collecting after the first signal
+LEARN_COLLECT_WINDOW = 10.0  # seconds to keep collecting after the first signal
 LEARN_MAX_SIGNALS = 8  # distinct signals kept per learning session
 MIN_SIGNAL_PULSES = 8  # ignore captures shorter than this many edges
 
-DEFAULT_REPEAT = 0  # extra repeats when re-sending a stored command
+# Extra repeats when sending a stored command; 0 sends exactly once.
+# Real remotes transmit their frame continuously while a button is held, and
+# typical OOK receivers only accept a code after several identical frames.
+# 7 extra repeats = 8 frames on air (~0.5-1 s), matching a short button press.
+# (Before storage 1.2 / entry 1.2, 0 meant "use 7"; see the migrations.)
+DEFAULT_REPEAT = 7
 
-# Effective repeats used when a command's repeat is 0/unset: real remotes
-# transmit their frame continuously while a button is held, and typical OOK
-# receivers only accept a code after several identical frames. 7 extra
-# repeats = 8 frames on air (~0.5-1 s), matching a short button press.
-DEFAULT_SEND_REPEAT = 7
-
-# Interval used by the receiver hub to (re-)attach to ESPHome API clients,
-# picking up reconnects and newly added nodes.
+# Interval used to notice ESPHome entries loaded while the receiver hub is
+# active and to retry failed discovery/subscription attempts. Connection
+# reconnects are handled immediately through ESPHome runtime-data callbacks.
 RECEIVER_MAINTENANCE_INTERVAL = 30  # seconds
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from .const import (
     ENTITY_TYPE_SWITCH,
     PROTOCOL_RAW,
 )
+from . import rf_analysis
 from .decoders import encoding_label
 
 # ---------------------------------------------------------------------------
@@ -243,6 +244,38 @@ class RFCommandData:
             extra=dict(data.get("extra", {})),
         )
 
+    def redecode(self) -> bool:
+        """Refresh fingerprint and decode metadata from the stored timings.
+
+        Called by the store when ``rf_analysis.DECODER_REVISION`` increased,
+        so commands learned with older decoders keep matching received
+        signals. The timings themselves are never touched. Returns whether
+        anything changed.
+        """
+        if not self.data:
+            return False
+        fingerprint, extra, base_unit = rf_analysis.stored_decode(self.data)
+        new_extra = {
+            key: value
+            for key, value in self.extra.items()
+            if key not in rf_analysis.STORED_DECODE_KEYS
+        }
+        new_extra.update(extra)
+        new_pulse_length = self.pulse_length
+        if self.protocol == PROTOCOL_RAW and base_unit:
+            # For raw commands the pulse length is the estimated base unit;
+            # encoded manual input (binary/tri-state) keeps the entered value.
+            new_pulse_length = base_unit
+        changed = (
+            fingerprint != self.fingerprint
+            or new_extra != self.extra
+            or new_pulse_length != self.pulse_length
+        )
+        self.fingerprint = fingerprint
+        self.extra = new_extra
+        self.pulse_length = new_pulse_length
+        return changed
+
     def protocol_summary(self) -> str:
         """Return a short protocol summary for entity attributes.
 
@@ -284,7 +317,7 @@ class RFCode:
     entity_type: str
     description: str = ""
     enabled: bool = True
-    commands: dict[str, RFCommandData] = field(default_factory=dict)
+    commands: dict[str, list[RFCommandData]] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -327,7 +360,8 @@ class RFCode:
             "enabled": self.enabled,
             "rf_data": {
                 "commands": {
-                    slot: command.to_dict() for slot, command in self.commands.items()
+                    slot: [command.to_dict() for command in variants]
+                    for slot, variants in self.commands.items()
                 }
             },
             "settings": dict(self.settings),
@@ -345,8 +379,16 @@ class RFCode:
             description=data.get("description", ""),
             enabled=bool(data.get("enabled", True)),
             commands={
-                slot: RFCommandData.from_dict(command)
-                for slot, command in commands_raw.items()
+                slot: [
+                    RFCommandData.from_dict(command)
+                    for command in (
+                        raw_variants
+                        if isinstance(raw_variants, list)
+                        else [raw_variants]
+                    )
+                    if isinstance(command, dict)
+                ]
+                for slot, raw_variants in commands_raw.items()
             },
             settings=dict(data.get("settings", {})),
         )

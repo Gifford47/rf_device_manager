@@ -7,8 +7,10 @@ services mutate devices/codes exclusively through this manager.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
 import logging
+from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,6 +20,7 @@ from homeassistant.helpers.device_registry import DeviceEntry, DeviceInfo
 from homeassistant.util import slugify
 
 from .const import (
+    CONF_ROTATION_RESET,
     CONF_DUPLICATE_FROM,
     DOMAIN,
     EVENT_CODE_LEARNED,
@@ -30,6 +33,7 @@ from .rf_manager import RFManager
 from .storage import RFDeviceStore
 
 _LOGGER = logging.getLogger(__name__)
+_DOMAIN_DATA_INIT_LOCK = f"{DOMAIN}_init_lock"
 
 
 @dataclass(slots=True)
@@ -54,17 +58,49 @@ async def async_get_or_create_domain_data(hass: HomeAssistant) -> RFDomainData:
     The config flow may run before any entry has been set up, so both the
     flow and ``async_setup_entry`` bootstrap through this helper.
     """
-    if DOMAIN in hass.data:
-        return get_domain_data(hass)
-    store = RFDeviceStore(hass)
-    await store.async_load()
-    data = RFDomainData(
-        store=store,
-        rf_manager=RFManager(hass),
-        device_manager=RFDeviceManager(hass, store),
-    )
-    hass.data[DOMAIN] = data
-    return data
+    # Create the per-Home-Assistant lock without yielding. Concurrent callers
+    # on the event loop therefore all obtain the same lock before any of them
+    # can begin loading the store.
+    init_lock = hass.data.get(_DOMAIN_DATA_INIT_LOCK)
+    if init_lock is None:
+        init_lock = hass.data[_DOMAIN_DATA_INIT_LOCK] = asyncio.Lock()
+
+    async with init_lock:
+        # Another caller may have completed initialization while we waited.
+        if DOMAIN in hass.data:
+            return get_domain_data(hass)
+
+        store = RFDeviceStore(hass)
+        await store.async_load()
+        rf_manager = RFManager(hass)
+        await rf_manager.async_load_rotation()
+        rf_manager.set_rotation_group_resolver(
+            partial(_rotation_reset_group, store)
+        )
+        data = RFDomainData(
+            store=store,
+            rf_manager=rf_manager,
+            device_manager=RFDeviceManager(hass, store),
+        )
+        hass.data[DOMAIN] = data
+        return data
+
+
+def _rotation_reset_group(store: RFDeviceStore, code_id: str) -> list[str] | None:
+    """Return all code ids of a code's device if it resets rotation on other buttons.
+
+    Used by ``RFManager`` when a command is sent or received: for devices with
+    ``CONF_ROTATION_RESET`` enabled, every other command of the device
+    restarts its variant sequence (like remotes that reset a button's code
+    rotation when a different button is pressed).
+    """
+    code = store.async_get_code(code_id)
+    if code is None:
+        return None
+    device = store.async_get_device(code.device_id)
+    if device is None or not device.settings.get(CONF_ROTATION_RESET, False):
+        return None
+    return list(store.async_codes_for_device(device.id))
 
 
 class RFDeviceManager:
@@ -162,6 +198,9 @@ class RFDeviceManager:
 
     async def async_remove_device(self, device_id: str) -> None:
         """Purge a device and all of its codes from the store."""
+        rf_manager = get_domain_data(self._hass).rf_manager
+        for code in self._store.async_codes_for_device(device_id).values():
+            rf_manager.reset_code_rotation(code.id)
         await self._store.async_delete_device(device_id)
         self.async_unregister_coordinator(device_id)
         _LOGGER.debug("Removed RF device %s from store", device_id)
@@ -229,6 +268,7 @@ class RFDeviceManager:
         code = self._store.async_delete_code(code_id)
         if code is None:
             return
+        get_domain_data(self._hass).rf_manager.reset_code_rotation(code_id)
         entity_registry = er.async_get(self._hass)
         entity_id = entity_registry.async_get_entity_id(
             code.entity_type, DOMAIN, code.unique_id

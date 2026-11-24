@@ -19,12 +19,12 @@ additional, hardware-agnostic capture source.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import partial
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from homeassistant.components.radio_frequency import (
     async_get_transmitters as rf_async_get_transmitters,
@@ -36,12 +36,14 @@ from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from rf_protocols import ModulationType, RadioFrequencyCommand
 
 from . import rf_analysis
+from .command_rotation import CommandRotation
 from .const import (
     DEFAULT_LEARN_TIMEOUT,
-    DEFAULT_SEND_REPEAT,
+    DEFAULT_REPEAT,
     DOMAIN,
     ESPHOME_DOMAIN,
     ESPHOME_FALLBACK_EVENT,
@@ -50,6 +52,9 @@ from .const import (
     MIN_SIGNAL_PULSES,
     RADIO_FREQUENCY_DOMAIN,
     RECEIVER_MAINTENANCE_INTERVAL,
+    ROTATION_SAVE_DELAY,
+    ROTATION_STORAGE_KEY,
+    ROTATION_STORAGE_VERSION,
 )
 from .models import CapturedSignal, RFCommandData
 
@@ -108,6 +113,15 @@ class _ReceiverMeta:
 
     name: str
     frequency: int | None
+
+
+class _ReceiverCache(NamedTuple):
+    """Receiver metadata tied to one ESPHome API connection."""
+
+    runtime_data: Any
+    client: Any
+    node_name: str
+    receivers: dict[tuple[int, int], _ReceiverMeta]
 
 
 # ---------------------------------------------------------------------------
@@ -178,18 +192,10 @@ def async_validate_transmitter(
 
 
 class ReceiverHub:
-    """Multiplexes RF captures from all available sources to subscribers.
+    """Multiplex RF captures and manage ESPHome receive subscriptions.
 
-    Sources:
-
-    * ESPHome nodes with ``ir_rf_proxy`` RF receivers, via the native API
-      subscription (auto-discovered, resilient against reconnects through a
-      periodic maintenance pass).
-    * The Home Assistant bus event ``esphome.rf_code_received`` as a
-      hardware-agnostic fallback (``timings`` list in the event data).
-
-    The hub only holds active subscriptions while at least one consumer
-    (learning session or receive-matching entity) is subscribed.
+    Receiver metadata is cached for the lifetime of an ESPHome API connection.
+    The hub only maintains live subscriptions while it has consumers.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -197,9 +203,19 @@ class ReceiverHub:
         self._hass = hass
         self._subscribers: set[SignalCallback] = set()
         self._esphome_unsubs: dict[str, CALLBACK_TYPE] = {}
+        self._device_unsubs: dict[str, tuple[Any, CALLBACK_TYPE]] = {}
+        # Empty receiver maps are successful, cacheable discovery results.
+        self._receiver_cache: dict[str, _ReceiverCache] = {}
+        self._disconnect_callbacks: dict[str, tuple[Any, CALLBACK_TYPE]] = {}
+        self._discovery_locks: dict[str, asyncio.Lock] = {}
+        self._connection_generations: dict[str, int] = {}
+        self._attach_in_progress: set[str] = set()
+        self._discovery_failures: dict[str, int] = {}
+        self._subscription_failures: dict[str, int] = {}
+        self._receive_api_missing: set[str] = set()
         self._bus_unsub: CALLBACK_TYPE | None = None
         self._timer_unsub: CALLBACK_TYPE | None = None
-        self._cached_names: list[str] = []
+        self._generation = 0
 
     @callback
     def async_subscribe(self, signal_callback: SignalCallback) -> CALLBACK_TYPE:
@@ -218,50 +234,62 @@ class ReceiverHub:
 
     @callback
     def async_receiver_names(self) -> list[str]:
-        """Return the receiver names found by the last discovery pass."""
-        return list(self._cached_names)
+        """Return receiver names from the current discovery cache."""
+        return sorted(
+            f"{cached.node_name}: {meta.name}" if meta.name else cached.node_name
+            for cached in self._receiver_cache.values()
+            for meta in cached.receivers.values()
+        )
 
     async def async_discover(
         self,
     ) -> dict[str, tuple[str, dict[tuple[int, int], _ReceiverMeta]]]:
-        """Detect RF receivers on all connected ESPHome nodes.
-
-        The static infos cached by the ESPHome integration are tried first,
-        but current Home Assistant core only stores ``RadioFrequencyInfo``
-        for *transmitters* (RF receiver entities do not exist yet), so
-        receivers are usually only visible through a direct entity listing
-        from the device (``list_entities_services``).
-
-        Returns ``{entry_id: (node_name, receivers)}`` and refreshes the
-        name cache used for UI display.
-        """
+        """Discover receivers, reusing results from the current connection."""
         discovered: dict[str, tuple[str, dict[tuple[int, int], _ReceiverMeta]]] = {}
-        names: list[str] = []
+        loaded_ids: set[str] = set()
+
         if HAS_AIOESPHOMEAPI:
             for entry in self._hass.config_entries.async_entries(ESPHOME_DOMAIN):
                 if entry.state is not ConfigEntryState.LOADED:
                     continue
+                loaded_ids.add(entry.entry_id)
                 runtime_data = getattr(entry, "runtime_data", None)
-                if runtime_data is None or not getattr(
-                    runtime_data, "available", False
-                ):
-                    continue
                 client = getattr(runtime_data, "client", None)
-                if client is None:
+                if (
+                    runtime_data is None
+                    or client is None
+                    or not getattr(runtime_data, "available", False)
+                ):
+                    if (
+                        entry.entry_id in self._receiver_cache
+                        or entry.entry_id in self._disconnect_callbacks
+                    ):
+                        self._async_invalidate_connection(
+                            entry.entry_id, entry.title, unsubscribe=client is None
+                        )
                     continue
-                receivers = self._receivers_from_info(runtime_data)
-                if not receivers:
-                    receivers = await self._receivers_from_device(client)
-                if not receivers:
-                    continue
-                device_info = getattr(runtime_data, "device_info", None)
-                node_name = getattr(device_info, "name", None) or entry.title
-                discovered[entry.entry_id] = (node_name, receivers)
-                names.extend(
-                    f"{node_name}: {meta.name}" if meta.name else node_name
-                    for meta in receivers.values()
+
+                node_name = (
+                    getattr(getattr(runtime_data, "device_info", None), "name", None)
+                    or entry.title
                 )
-        self._cached_names = sorted(names)
+                receivers = await self._async_get_receivers(
+                    entry, runtime_data, client, node_name
+                )
+                if receivers:
+                    discovered[entry.entry_id] = (node_name, receivers)
+
+        # Entries can be removed while the hub is stopped.
+        tracked_ids = (
+            set(self._receiver_cache)
+            | set(self._disconnect_callbacks)
+            | set(self._esphome_unsubs)
+            | set(self._device_unsubs)
+            | set(self._discovery_failures)
+        )
+        for entry_id in tracked_ids - loaded_ids:
+            self._async_remove_entry(entry_id)
+
         return discovered
 
     @staticmethod
@@ -295,35 +323,163 @@ class ReceiverHub:
         return cls._build_receiver_metas(rf_infos.values())
 
     async def _receivers_from_device(
-        self, client: Any
-    ) -> dict[tuple[int, int], _ReceiverMeta]:
-        """Ask the ESPHome node itself for its RF receiver entities."""
+        self, entry_id: str, client: Any, node_name: str
+    ) -> dict[tuple[int, int], _ReceiverMeta] | None:
+        """Query the node; return None on failure so the result is retried."""
         try:
             entities, _services = await client.list_entities_services()
-        except Exception:  # noqa: BLE001 - connection may drop mid-call
-            _LOGGER.debug("Could not list entities of ESPHome node", exc_info=True)
-            return {}
+        except Exception as err:  # noqa: BLE001 - connection may drop mid-call
+            failures = self._discovery_failures.get(entry_id, 0) + 1
+            self._discovery_failures[entry_id] = failures
+            if failures == 1:
+                _LOGGER.warning(
+                    "Could not discover RF receivers on ESPHome node %s; "
+                    "discovery will be retried",
+                    node_name,
+                    exc_info=True,
+                )
+            else:
+                _LOGGER.debug(
+                    "RF receiver discovery on ESPHome node %s is still failing: %s",
+                    node_name,
+                    err,
+                )
+            return None
+
         return self._build_receiver_metas(
             info for info in entities if isinstance(info, RadioFrequencyInfo)
         )
 
+    def _watch_disconnect(
+        self, entry_id: str, runtime_data: Any, node_name: str
+    ) -> None:
+        """Invalidate connection-bound state as soon as ESPHome disconnects."""
+        current = self._disconnect_callbacks.get(entry_id)
+        if current is not None and current[0] is runtime_data:
+            return
+        if current is not None:
+            current[0].disconnect_callbacks.discard(current[1])
+
+        disconnect_callback = partial(
+            self._handle_disconnect, entry_id, runtime_data, node_name
+        )
+        runtime_data.disconnect_callbacks.add(disconnect_callback)
+        self._disconnect_callbacks[entry_id] = (runtime_data, disconnect_callback)
+        _LOGGER.debug("Tracking disconnect lifecycle of ESPHome node %s", node_name)
+
+    @callback
+    def _handle_disconnect(
+        self, entry_id: str, runtime_data: Any, node_name: str
+    ) -> None:
+        """Forget state belonging to the disconnected API connection."""
+        current = self._disconnect_callbacks.get(entry_id)
+        if current is None or current[0] is not runtime_data:
+            return
+        # Home Assistant has already cleared disconnect_callbacks. The old
+        # receive unsubscribe handle belongs to the dead API connection.
+        _LOGGER.debug(
+            "ESPHome node %s disconnected; invalidating RF receiver state",
+            node_name,
+        )
+        self._async_invalidate_connection(entry_id, node_name)
+
+    async def _async_get_receivers(
+        self, entry: Any, runtime_data: Any, client: Any, node_name: str
+    ) -> dict[tuple[int, int], _ReceiverMeta] | None:
+        """Return cached receivers or discover them once for this connection."""
+        entry_id = entry.entry_id
+        cached = self._receiver_cache.get(entry_id)
+        if (
+            cached is not None
+            and cached.runtime_data is runtime_data
+            and cached.client is client
+        ):
+            return cached.receivers
+        if cached is not None:
+            self._async_invalidate_connection(entry_id, node_name, unsubscribe=True)
+
+        lock = self._discovery_locks.get(entry_id)
+        if lock is None:
+            lock = self._discovery_locks[entry_id] = asyncio.Lock()
+        async with lock:
+            cached = self._receiver_cache.get(entry_id)
+            if (
+                cached is not None
+                and cached.runtime_data is runtime_data
+                and cached.client is client
+            ):
+                return cached.receivers
+            if cached is not None:
+                self._async_invalidate_connection(
+                    entry_id, node_name, unsubscribe=True
+                )
+
+            current_entry = self._hass.config_entries.async_get_entry(entry_id)
+            if (
+                current_entry is not entry
+                or entry.state is not ConfigEntryState.LOADED
+                or getattr(entry, "runtime_data", None) is not runtime_data
+                or getattr(runtime_data, "client", None) is not client
+                or not getattr(runtime_data, "available", False)
+            ):
+                return None
+
+            generation = self._connection_generations.get(entry_id, 0)
+            self._watch_disconnect(entry_id, runtime_data, node_name)
+            receivers = self._receivers_from_info(runtime_data)
+            if not receivers:
+                receivers = await self._receivers_from_device(
+                    entry_id, client, node_name
+                )
+            if receivers is None:
+                return None
+
+            # Reject a result if this connection changed while discovery awaited.
+            current_entry = self._hass.config_entries.async_get_entry(entry_id)
+            if (
+                current_entry is not entry
+                or getattr(current_entry, "runtime_data", None) is not runtime_data
+                or getattr(runtime_data, "client", None) is not client
+                or not getattr(runtime_data, "available", False)
+                or generation != self._connection_generations.get(entry_id, 0)
+            ):
+                return None
+
+            failures = self._discovery_failures.pop(entry_id, 0)
+            if failures:
+                _LOGGER.info(
+                    "RF receiver discovery on ESPHome node %s recovered after "
+                    "%d failed attempt(s)",
+                    node_name,
+                    failures,
+                )
+            if not receivers:
+                _LOGGER.debug("No RF receiver found on ESPHome node %s", node_name)
+
+            self._receiver_cache[entry_id] = _ReceiverCache(
+                runtime_data, client, node_name, receivers
+            )
+            return receivers
+
     @callback
     def _async_start(self) -> None:
-        """Attach all capture sources."""
+        """Attach capture sources and start receiver maintenance."""
+        self._generation += 1
         self._bus_unsub = self._hass.bus.async_listen(
             ESPHOME_FALLBACK_EVENT, self._handle_bus_event
         )
-        self._hass.async_create_task(self._async_attach_esphome())
         self._timer_unsub = async_track_time_interval(
             self._hass,
             self._async_maintain,
             timedelta(seconds=RECEIVER_MAINTENANCE_INTERVAL),
         )
         _LOGGER.debug("Receiver hub started")
+        self._async_maintain()
 
     @callback
     def _async_stop(self) -> None:
-        """Detach all capture sources."""
+        """Detach live subscriptions while retaining valid discovery cache."""
+        self._generation += 1
         if self._bus_unsub is not None:
             self._bus_unsub()
             self._bus_unsub = None
@@ -336,23 +492,296 @@ class ReceiverHub:
             except Exception:  # noqa: BLE001 - client may already be gone
                 _LOGGER.debug("Error detaching ESPHome subscription", exc_info=True)
         self._esphome_unsubs.clear()
+        for _runtime_data, unsub in self._device_unsubs.values():
+            try:
+                unsub()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Error removing ESPHome connection listener", exc_info=True
+                )
+        self._device_unsubs.clear()
+        self._subscription_failures.clear()
         _LOGGER.debug("Receiver hub stopped")
 
     @callback
     def _async_maintain(self, _now: Any = None) -> None:
-        """Drop dead ESPHome subscriptions and attach new/reconnected nodes."""
-        stale = [
-            entry_id
-            for entry_id in self._esphome_unsubs
-            if not self._is_entry_available(entry_id)
-        ]
-        for entry_id in stale:
-            unsub = self._esphome_unsubs.pop(entry_id)
+        """Notice new entries and retry incomplete receiver attachments."""
+        if self._subscribers:
+            self._async_sync_esphome_entries(self._generation)
+
+    @callback
+    def _async_sync_esphome_entries(self, generation: int) -> None:
+        """Track loaded ESPHome entries and attach receivers when needed."""
+        if not self._is_running(generation) or not HAS_AIOESPHOMEAPI:
+            return
+
+        loaded_ids: set[str] = set()
+        for entry in self._hass.config_entries.async_entries(ESPHOME_DOMAIN):
+            if entry.state is not ConfigEntryState.LOADED:
+                continue
+            loaded_ids.add(entry.entry_id)
+            runtime_data = getattr(entry, "runtime_data", None)
+            if runtime_data is None:
+                self._async_remove_entry(entry.entry_id)
+                continue
+
+            device_unsub = self._device_unsubs.get(entry.entry_id)
+            if device_unsub is not None and device_unsub[0] is not runtime_data:
+                try:
+                    device_unsub[1]()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "Error replacing ESPHome connection listener",
+                        exc_info=True,
+                    )
+                self._async_invalidate_connection(
+                    entry.entry_id, entry.title, unsubscribe=True
+                )
+                device_unsub = None
+
+            if device_unsub is None:
+                unsub = runtime_data.async_subscribe_device_updated(
+                    partial(
+                        self._handle_device_update,
+                        entry.entry_id,
+                        generation,
+                    )
+                )
+                self._device_unsubs[entry.entry_id] = (runtime_data, unsub)
+
+            if not getattr(runtime_data, "available", False):
+                if (
+                    entry.entry_id in self._receiver_cache
+                    or entry.entry_id in self._esphome_unsubs
+                    or entry.entry_id in self._disconnect_callbacks
+                ):
+                    self._async_invalidate_connection(entry.entry_id, entry.title)
+                continue
+
+            cached = self._receiver_cache.get(entry.entry_id)
+            disconnect_callback = self._disconnect_callbacks.get(entry.entry_id)
+            if (
+                cached is not None
+                and (
+                    cached.runtime_data is not runtime_data
+                    or cached.client is not getattr(runtime_data, "client", None)
+                )
+            ) or (
+                disconnect_callback is not None
+                and disconnect_callback[0] is not runtime_data
+            ):
+                self._async_invalidate_connection(
+                    entry.entry_id, entry.title, unsubscribe=True
+                )
+                cached = None
+
+            if cached is None or (
+                cached.receivers
+                and entry.entry_id not in self._esphome_unsubs
+                and entry.entry_id not in self._receive_api_missing
+            ):
+                self._hass.async_create_task(
+                    self._async_attach_entry(entry.entry_id, generation)
+                )
+
+        tracked_ids = (
+            set(self._receiver_cache)
+            | set(self._disconnect_callbacks)
+            | set(self._esphome_unsubs)
+            | set(self._device_unsubs)
+        )
+        for entry_id in tracked_ids - loaded_ids:
+            self._async_remove_entry(entry_id)
+
+    @callback
+    def _handle_device_update(self, entry_id: str, generation: int) -> None:
+        """Immediately invalidate or reattach after an ESPHome state update."""
+        if not self._is_running(generation):
+            return
+        entry = self._hass.config_entries.async_get_entry(entry_id)
+        runtime_data = getattr(entry, "runtime_data", None) if entry else None
+        node_name = (
+            getattr(getattr(runtime_data, "device_info", None), "name", None)
+            or (entry.title if entry else entry_id)
+        )
+        if runtime_data is None or not getattr(runtime_data, "available", False):
+            self._async_invalidate_connection(entry_id, node_name)
+            return
+
+        _LOGGER.debug(
+            "ESPHome node %s became available; refreshing RF receiver subscription",
+            node_name,
+        )
+        self._async_invalidate_connection(entry_id, node_name, unsubscribe=True)
+        self._hass.async_create_task(self._async_attach_entry(entry_id, generation))
+
+    def _is_running(self, generation: int) -> bool:
+        """Return whether an operation belongs to the current hub run."""
+        return (
+            bool(self._subscribers) and generation == self._generation
+        )
+
+    def _async_invalidate_connection(
+        self, entry_id: str, node_name: str, *, unsubscribe: bool = False
+    ) -> None:
+        """Discard connection-bound cache, callbacks and receive subscription."""
+        self._connection_generations[entry_id] = (
+            self._connection_generations.get(entry_id, 0) + 1
+        )
+        receiver_unsub = self._esphome_unsubs.pop(entry_id, None)
+        if receiver_unsub is not None and unsubscribe:
             try:
-                unsub()
+                receiver_unsub()
+            except Exception:  # noqa: BLE001 - old API connection may be closed
+                _LOGGER.debug(
+                    "Error detaching old RF receiver subscription from %s",
+                    node_name,
+                    exc_info=True,
+                )
+        callback_data = self._disconnect_callbacks.pop(entry_id, None)
+        if callback_data is not None:
+            callback_data[0].disconnect_callbacks.discard(callback_data[1])
+        self._receiver_cache.pop(entry_id, None)
+        self._discovery_failures.pop(entry_id, None)
+        self._subscription_failures.pop(entry_id, None)
+        self._receive_api_missing.discard(entry_id)
+
+    def _async_remove_entry(self, entry_id: str) -> None:
+        """Remove all receiver state and lifecycle listeners for an entry."""
+        cached = self._receiver_cache.get(entry_id)
+        node_name = cached.node_name if cached is not None else entry_id
+        self._async_invalidate_connection(entry_id, node_name, unsubscribe=True)
+        if device_unsub := self._device_unsubs.pop(entry_id, None):
+            try:
+                device_unsub[1]()
             except Exception:  # noqa: BLE001
-                _LOGGER.debug("Error detaching stale subscription", exc_info=True)
-        self._hass.async_create_task(self._async_attach_esphome())
+                _LOGGER.debug(
+                    "Error removing ESPHome connection listener", exc_info=True
+                )
+
+    async def _async_attach_entry(self, entry_id: str, generation: int) -> None:
+        """Discover and subscribe to receivers on one ESPHome connection."""
+        if not self._is_running(generation) or entry_id in self._attach_in_progress:
+            return
+        self._attach_in_progress.add(entry_id)
+        connection_generation = self._connection_generations.get(entry_id, 0)
+        try:
+            entry = self._hass.config_entries.async_get_entry(entry_id)
+            if entry is None or entry.state is not ConfigEntryState.LOADED:
+                return
+            runtime_data = getattr(entry, "runtime_data", None)
+            client = getattr(runtime_data, "client", None)
+            if (
+                runtime_data is None
+                or client is None
+                or not getattr(runtime_data, "available", False)
+            ):
+                return
+            node_name = (
+                getattr(getattr(runtime_data, "device_info", None), "name", None)
+                or entry.title
+            )
+            receivers = await self._async_get_receivers(
+                entry, runtime_data, client, node_name
+            )
+            if receivers is None or not self._is_running(generation) or not receivers:
+                return
+
+            cached = self._receiver_cache.get(entry_id)
+            if (
+                cached is None
+                or cached.runtime_data is not runtime_data
+                or cached.client is not client
+                or cached.receivers is not receivers
+            ):
+                return
+
+            connection_generation = self._connection_generations.get(entry_id, 0)
+            if entry_id in self._esphome_unsubs:
+                return
+            subscribe = getattr(client, "subscribe_infrared_rf_receive", None)
+            if subscribe is None:
+                if entry_id not in self._receive_api_missing:
+                    self._receive_api_missing.add(entry_id)
+                    _LOGGER.warning(
+                        "ESPHome node %s exposes RF receivers but has no receive "
+                        "subscription API",
+                        node_name,
+                    )
+                return
+
+            try:
+                unsub = subscribe(
+                    partial(self._handle_esphome_event, receivers, node_name)
+                )
+            except Exception as err:  # noqa: BLE001 - connection may drop mid-call
+                failures = self._subscription_failures.get(entry_id, 0) + 1
+                self._subscription_failures[entry_id] = failures
+                if failures == 1:
+                    _LOGGER.warning(
+                        "Could not subscribe to RF receivers on ESPHome node %s; "
+                        "subscription will be retried",
+                        node_name,
+                        exc_info=True,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "RF receiver subscription on ESPHome node %s is still "
+                        "failing (attempt %d): %s",
+                        node_name,
+                        failures,
+                        err,
+                    )
+                return
+
+            current_entry = self._hass.config_entries.async_get_entry(entry_id)
+            if (
+                not self._is_running(generation)
+                or current_entry is not entry
+                or getattr(current_entry, "runtime_data", None) is not runtime_data
+                or getattr(runtime_data, "client", None) is not client
+                or not getattr(runtime_data, "available", False)
+                or connection_generation
+                != self._connection_generations.get(entry_id, 0)
+            ):
+                try:
+                    unsub()
+                except Exception:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "Error detaching RF subscription after connection changed",
+                        exc_info=True,
+                    )
+                return
+
+            self._esphome_unsubs[entry_id] = unsub
+            failures = self._subscription_failures.pop(entry_id, 0)
+            if failures:
+                _LOGGER.info(
+                    "RF receiver subscription on ESPHome node %s recovered after "
+                    "%d failed attempt(s)",
+                    node_name,
+                    failures,
+                )
+            else:
+                _LOGGER.debug(
+                    "Subscribed to %d RF receiver(s) on %s",
+                    len(receivers),
+                    node_name,
+                )
+        finally:
+            self._attach_in_progress.discard(entry_id)
+            if (
+                self._subscribers
+                and self._is_entry_available(entry_id)
+                and (
+                    generation != self._generation
+                    or connection_generation
+                    != self._connection_generations.get(entry_id, 0)
+                )
+            ):
+                self._hass.async_create_task(
+                    self._async_attach_entry(entry_id, self._generation)
+                )
 
     def _is_entry_available(self, entry_id: str) -> bool:
         """Return whether an ESPHome config entry is loaded and connected."""
@@ -361,42 +790,6 @@ class ReceiverHub:
             return False
         runtime_data = getattr(entry, "runtime_data", None)
         return bool(runtime_data and getattr(runtime_data, "available", False))
-
-    async def _async_attach_esphome(self) -> None:
-        """Subscribe to the IR/RF receive stream of all reachable nodes."""
-        if not self._subscribers:
-            return
-        discovered = await self.async_discover()
-        for entry_id, (node_name, receivers) in discovered.items():
-            if entry_id in self._esphome_unsubs:
-                continue
-            entry = self._hass.config_entries.async_get_entry(entry_id)
-            if entry is None:
-                continue
-            client = getattr(getattr(entry, "runtime_data", None), "client", None)
-            subscribe = getattr(client, "subscribe_infrared_rf_receive", None)
-            if subscribe is None:
-                _LOGGER.debug(
-                    "ESPHome node %s has RF receivers but no receive API "
-                    "(aioesphomeapi too old?)",
-                    node_name,
-                )
-                continue
-            try:
-                unsub = subscribe(
-                    partial(self._handle_esphome_event, receivers, node_name)
-                )
-            except Exception:  # noqa: BLE001 - connection may drop mid-call
-                _LOGGER.debug(
-                    "Could not subscribe to %s, retrying on next maintenance pass",
-                    node_name,
-                    exc_info=True,
-                )
-                continue
-            self._esphome_unsubs[entry_id] = unsub
-            _LOGGER.debug(
-                "Subscribed to %d RF receiver(s) on %s", len(receivers), node_name
-            )
 
     @callback
     def _handle_esphome_event(
@@ -409,7 +802,7 @@ class ReceiverHub:
         key = (int(getattr(event, "device_id", 0)), int(getattr(event, "key", 0)))
         meta = receivers.get(key)
         if meta is None:
-            return  # IR receiver or unknown proxy entity on the same node
+            return
         timings = list(getattr(event, "timings", []) or [])
         self._async_dispatch(
             timings,
@@ -419,7 +812,7 @@ class ReceiverHub:
 
     @callback
     def _handle_bus_event(self, event: Event) -> None:
-        """Handle the ``esphome.rf_code_received`` fallback bus event."""
+        """Handle the esphome.rf_code_received fallback bus event."""
         raw = (
             event.data.get("timings")
             or event.data.get("raw")
@@ -479,51 +872,6 @@ class ReceiverHub:
 # ---------------------------------------------------------------------------
 
 
-def _cluster_learn_signals(
-    signals: list[CapturedSignal], max_signals: int
-) -> list[CapturedSignal]:
-    """Group captures that carry the same RF code and rank by frequency.
-
-    Real button presses repeat their frame many times while 433 MHz noise
-    and neighbouring devices produce one-off captures, so after clustering
-    (identical decoded bits, or dominant frames within timing tolerance)
-    the wanted signal reliably sorts to the top.
-    """
-    clusters: list[list[CapturedSignal]] = []
-    for signal in signals:
-        for cluster in clusters:
-            if rf_analysis.same_code(cluster[0].analysis, signal.analysis):
-                cluster.append(signal)
-                break
-        else:
-            clusters.append([signal])
-
-    merged: list[CapturedSignal] = []
-    for cluster in clusters:
-        representative = max(
-            cluster,
-            key=lambda sig: (
-                sig.analysis.get("times_seen", 1),
-                sig.analysis.get("frame_length", 0),
-            ),
-        )
-        representative.analysis["times_seen"] = sum(
-            sig.analysis.get("times_seen", 1) for sig in cluster
-        )
-        if len(cluster) > 1:
-            representative.analysis["variants"] = len(cluster)
-        merged.append(representative)
-
-    merged.sort(
-        key=lambda sig: (
-            sig.analysis.get("times_seen", 1),
-            sig.analysis.get("frame_length", 0),
-        ),
-        reverse=True,
-    )
-    return merged[:max_signals]
-
-
 @dataclass
 class LearnSession:
     """One learning pass: wait for signals, collect, cluster.
@@ -569,7 +917,9 @@ class LearnSession:
         finally:
             unsubscribe()
 
-        self.signals = _cluster_learn_signals(self.signals, self.max_signals)
+        self.signals = rf_analysis.cluster_learn_signals(
+            self.signals, self.max_signals
+        )
         return self.signals
 
 
@@ -577,7 +927,7 @@ class LearnSession:
 # Received-code matcher
 # ---------------------------------------------------------------------------
 
-MatchCallback = Callable[[str, CapturedSignal], None]
+MatchCallback = Callable[[str, CapturedSignal, int], None]
 
 # A received code matches a stored one when their decoded bit strings differ
 # by at most this fraction of their length. Real receptions jitter and often
@@ -592,16 +942,18 @@ class _MatchEntry:
     """One registered command slot to match received signals against."""
 
     slot: str
+    variant_index: int
     fingerprint: str | None
     bits: str | None
     callback: MatchCallback
+    group: str | None = None
 
 
 class CodeMatcher:
     """Routes received RF signals to the entities whose code they match.
 
-    Every entity registers its command slots here (and re-registers whenever
-    they change). A single hub subscription then routes each incoming capture
+    Every entity registers each command variant here (and re-registers whenever
+    its commands change). A single hub subscription then routes each incoming capture
     to the matching entities, so an external remote press updates the Home
     Assistant entity state. Matching is tolerant: an exact fingerprint hit is
     preferred, otherwise decoded bit strings are compared with a small Hamming
@@ -617,17 +969,24 @@ class CodeMatcher:
     @callback
     def async_register(
         self,
-        slots: list[tuple[str, str | None, str | None]],
+        slots: list[tuple[str, int, str | None, str | None]],
         match_callback: MatchCallback,
+        group: str | None = None,
     ) -> CALLBACK_TYPE:
-        """Register an entity's slots as ``(slot, fingerprint, bits)`` tuples.
+        """Register commands as ``(slot, index, fingerprint, bits)`` tuples.
+
+        ``group`` (the RF device id) ties entities whose codes come from the
+        same remote together: per signal, only the closest-matching entities
+        of a group fire (see ``_dispatch``).
 
         Returns a callback that removes exactly these registrations. The hub
         subscription starts on the first registration and stops with the last.
         """
         added = [
-            _MatchEntry(slot, fingerprint, bits, match_callback)
-            for slot, fingerprint, bits in slots
+            _MatchEntry(
+                slot, variant_index, fingerprint, bits, match_callback, group
+            )
+            for slot, variant_index, fingerprint, bits in slots
             if fingerprint or bits
         ]
         self._entries.extend(added)
@@ -650,18 +1009,25 @@ class CodeMatcher:
 
     @callback
     def _dispatch(self, signal: CapturedSignal) -> None:
-        """Route a captured signal to the best-matching slot of each entity.
+        """Route a capture to the best-matching command variant per entity.
 
         Crucially, at most **one** slot per entity is triggered per signal -
         the closest match. Sibling buttons of one remote often differ by a
         single bit, so a received code lands within tolerance of several
         slots of the same entity; dispatching all of them would flip the
         state back and forth (on/off/on/off) once per repeated frame.
+
+        The same applies *across* entities of one device: a remote whose
+        buttons are learned as separate entities (e.g. stateless buttons)
+        has sibling codes only a bit or two apart, so one press would fire
+        every button within tolerance. Within a ``group`` only the entities
+        at the group's best distance fire - an exact hit wins outright,
+        while several entities sharing an identical code still all fire.
         """
         fingerprint = signal.fingerprint
         bits = signal.analysis.get("bits")
 
-        # callback (entity) -> (best distance, best entry)
+        # callback (entity) -> (best distance, best command variant)
         best: dict[MatchCallback, tuple[int, _MatchEntry]] = {}
         for entry in self._entries:
             distance = self._match_distance(entry, fingerprint, bits)
@@ -671,9 +1037,18 @@ class CodeMatcher:
             if current is None or distance < current[0]:
                 best[entry.callback] = (distance, entry)
 
-        for _distance, entry in best.values():
+        group_best: dict[object, int] = {}
+        for distance, entry in best.values():
+            key = entry.group if entry.group is not None else entry.callback
+            if distance < group_best.get(key, distance + 1):
+                group_best[key] = distance
+
+        for distance, entry in best.values():
+            key = entry.group if entry.group is not None else entry.callback
+            if distance > group_best[key]:
+                continue  # a sibling code of the same device matched better
             try:
-                entry.callback(entry.slot, signal)
+                entry.callback(entry.slot, signal, entry.variant_index)
             except Exception:  # noqa: BLE001 - one bad handler must not break others
                 _LOGGER.exception("Error handling received RF code")
 
@@ -704,6 +1079,11 @@ class RFManager:
         self._hass = hass
         self.hub = ReceiverHub(hass)
         self.matcher = CodeMatcher(self.hub)
+        self._variant_rotation = CommandRotation()
+        self._rotation_store: Store[dict[str, Any]] | None = None
+        self._rotation_group_resolver: (
+            Callable[[str], Iterable[str] | None] | None
+        ) = None
 
     async def async_send(
         self,
@@ -712,6 +1092,7 @@ class RFManager:
         *,
         frequency: int | None = None,
         repeat: int | None = None,
+        log_context: str | None = None,
     ) -> None:
         """Send a stored command through a ``radio_frequency`` transmitter.
 
@@ -737,31 +1118,165 @@ class RFManager:
         # Send the captured timings exactly as received (only normalized:
         # sign convention, glitch removal, idle trim). Real remotes and
         # tools like Tasmota's RfRaw simply replay the raw waveform and let
-        # the transmitter repeat it a handful of times, so apply a sensible
-        # minimum repetition when the stored command has none.
+        # the transmitter repeat it a handful of times. ``repeat`` counts
+        # *extra* transmissions, so 0 sends exactly once; new devices and
+        # codes default to DEFAULT_REPEAT (7).
         effective_repeat = repeat if repeat is not None else command.repeat
-        if effective_repeat is None or effective_repeat <= 0:
-            effective_repeat = DEFAULT_SEND_REPEAT
+        if effective_repeat is None or effective_repeat < 0:
+            effective_repeat = DEFAULT_REPEAT
         rf_command = _StoredCommand(
             frequency=frequency or command.frequency,
             timings=timings,
             repeat_count=effective_repeat,
         )
-        _LOGGER.debug(
-            "Sending %d pulses at %d Hz via %s (repeat=%d)",
-            len(timings),
-            rf_command.frequency,
-            transmitter,
-            rf_command.repeat_count,
-        )
+        if log_context:
+            _LOGGER.debug(
+                "Sending RF command for %s: %d pulses at %d Hz via %s (repeat=%d)",
+                log_context,
+                len(timings),
+                rf_command.frequency,
+                transmitter,
+                rf_command.repeat_count,
+            )
+        else:
+            _LOGGER.debug(
+                "Sending %d pulses at %d Hz via %s (repeat=%d)",
+                len(timings),
+                rf_command.frequency,
+                transmitter,
+                rf_command.repeat_count,
+            )
         await rf_async_send_command(self._hass, transmitter, rf_command)
+
+    # ------------------------------------------------------------------
+    # Command-variant rotation
+    # ------------------------------------------------------------------
+
+    async def async_load_rotation(self) -> None:
+        """Load the persisted rotation state (call once after construction).
+
+        Rotation state lives in its own small store
+        (``.storage/rf_device_manager_rotation``) because it changes on every
+        send; rewriting the large code store each time would be wasteful.
+        """
+        if self._rotation_store is None:
+            self._rotation_store = Store(
+                self._hass, ROTATION_STORAGE_VERSION, ROTATION_STORAGE_KEY
+            )
+        data = await self._rotation_store.async_load()
+        self._variant_rotation.load((data or {}).get("next"))
+
+    @callback
+    def set_rotation_group_resolver(
+        self, resolver: Callable[[str], Iterable[str] | None] | None
+    ) -> None:
+        """Set how to find the sibling codes whose rotation a press resets.
+
+        The resolver gets a code id and returns the ids of all codes of the
+        same device when that device has "reset rotation on other button"
+        enabled, else ``None``.
+        """
+        self._rotation_group_resolver = resolver
+
+    @callback
+    def _rotation_data(self) -> dict[str, Any]:
+        """Return the rotation state to persist."""
+        return {"next": self._variant_rotation.to_dict()}
+
+    @callback
+    def _async_schedule_rotation_save(self) -> None:
+        """Persist rotation state soon (debounced; flushed on HA shutdown)."""
+        if self._rotation_store is not None:
+            self._rotation_store.async_delay_save(
+                self._rotation_data, ROTATION_SAVE_DELAY
+            )
+
+    @callback
+    def _async_reset_sibling_rotation(self, code_id: str, slot: str) -> bool:
+        """Restart the sequences of the device's other commands, if enabled.
+
+        Returns whether any rotation state changed.
+        """
+        if self._rotation_group_resolver is None:
+            return False
+        code_ids = self._rotation_group_resolver(code_id)
+        if code_ids is None:
+            return False
+        changed = self._variant_rotation.reset_others(code_ids, code_id, slot)
+        if changed:
+            _LOGGER.debug(
+                "Reset command-variant rotation of the other commands of the "
+                "device of code %s (activity on slot %s)",
+                code_id,
+                slot,
+            )
+        return changed
+
+    async def async_send_variants(
+        self,
+        variants: list[RFCommandData],
+        transmitter: str,
+        *,
+        code_id: str,
+        slot: str,
+        context: str,
+        repeat: int | None = None,
+    ) -> None:
+        """Send the next command variant and advance its persisted rotation."""
+        if not variants:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="empty_command"
+            )
+        # Advance before awaiting transmission so concurrent sends reserve
+        # different variants rather than racing on the same current index.
+        index = self._variant_rotation.next_index(code_id, slot, len(variants))
+        siblings_reset = self._async_reset_sibling_rotation(code_id, slot)
+        if len(variants) > 1 or siblings_reset:
+            self._async_schedule_rotation_save()
+        command = variants[index]
+        log_context = (
+            f"{context}, slot {slot}, variant {index + 1}/{len(variants)}, "
+            f"fingerprint {command.fingerprint or 'n/a'}"
+        )
+        await self.async_send(
+            command, transmitter, repeat=repeat, log_context=log_context
+        )
+
+    @callback
+    def sync_variant(
+        self, code_id: str, slot: str, variant_index: int, variant_count: int
+    ) -> None:
+        """Set the next send to follow a command variant received remotely."""
+        self._variant_rotation.sync_after_receive(
+            code_id, slot, variant_index, variant_count
+        )
+        siblings_reset = self._async_reset_sibling_rotation(code_id, slot)
+        if variant_count > 1 or siblings_reset:
+            self._async_schedule_rotation_save()
+
+    @callback
+    def next_variant_index(self, code_id: str, slot: str, count: int) -> int:
+        """Return the variant index the next send of a command will use."""
+        return self._variant_rotation.peek_index(code_id, slot, count)
+
+    @callback
+    def reset_command_rotation(self, code_id: str, slot: str) -> None:
+        """Reset one command's next variant to the first entry."""
+        self._variant_rotation.reset_command(code_id, slot)
+        self._async_schedule_rotation_save()
+
+    @callback
+    def reset_code_rotation(self, code_id: str) -> None:
+        """Remove all rotation state for a deleted RF code."""
+        self._variant_rotation.reset_code(code_id)
+        self._async_schedule_rotation_save()
 
     async def async_send_raw(
         self,
         transmitter: str,
         timings: list[int],
         frequency: int,
-        repeat: int = 0,
+        repeat: int = DEFAULT_REPEAT,
     ) -> None:
         """Send raw timings (service helper)."""
         command = RFCommandData(data=timings, frequency=frequency, repeat=repeat)
