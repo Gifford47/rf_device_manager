@@ -628,10 +628,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show the management menu."""
-        domain_data = await async_get_or_create_domain_data(self.hass)
-        # Warm the receiver cache so the learn wizard can show which
-        # ESPHome RF receivers are available.
-        await domain_data.rf_manager.hub.async_discover()
+        await async_get_or_create_domain_data(self.hass)
         menu = ["device_settings", "add_code"]
         if self._codes():
             menu.append("manage_codes")

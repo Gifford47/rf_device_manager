@@ -166,8 +166,9 @@ MIN_SIGNAL_PULSES = 8  # ignore captures shorter than this many edges
 # (Before storage 1.2 / entry 1.2, 0 meant "use 7"; see the migrations.)
 DEFAULT_REPEAT = 7
 
-# Interval used by the receiver hub to (re-)attach to ESPHome API clients,
-# picking up reconnects and newly added nodes.
+# Interval used to notice ESPHome entries loaded while the receiver hub is
+# active and to retry failed discovery/subscription attempts. Connection
+# reconnects are handled immediately through ESPHome runtime-data callbacks.
 RECEIVER_MAINTENANCE_INTERVAL = 30  # seconds
 
 # ---------------------------------------------------------------------------

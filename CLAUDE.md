@@ -154,9 +154,14 @@ polarity is the non-obvious part.
   Sources: ESPHome nodes (native API `subscribe_infrared_rf_receive`, discovered
   via `list_entities_services()` because core does not cache RF *receiver*
   infos) + the `esphome.rf_code_received` bus event. Sources attach on first
-  subscriber, detach on last; a 30s maintenance timer re-attaches after ESPHome
-  reconnects. `async_discover()` refreshes the receiver-name cache shown in the
-  learn UI.
+  subscriber and detach on last. ESPHome runtime-data connection callbacks
+  invalidate and re-establish receiver subscriptions on disconnect/reconnect;
+  a 30s maintenance scan notices newly loaded ESPHome entries and retries failed
+  discovery/subscription attempts. Receiver metadata (including empty
+  results) is cached per ESPHome connection and reused by maintenance,
+  `async_discover()`, the learn UI and diagnostics. ESPHome disconnect callbacks
+  invalidate the cache even while the hub is stopped; failed discovery is not
+  cached and is retried.
 - **`CodeMatcher`** — registered variants `(slot, index, fingerprint, bits, callback)`;
   one hub subscription routes each received capture to the matching entities.
   Matching is **tolerant**: exact fingerprint = distance 0, else decoded-bit
