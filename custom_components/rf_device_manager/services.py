@@ -133,6 +133,20 @@ async def _async_handle_send_code(call: ServiceCall) -> None:
             translation_key="code_not_found",
             translation_placeholders={"code": call.data[ATTR_CODE]},
         )
+    # Disabled codes/devices are unavailable as entities; the service must
+    # not bypass that.
+    if not device.enabled:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="device_disabled",
+            translation_placeholders={"device": device.name},
+        )
+    if not code.enabled:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="code_disabled",
+            translation_placeholders={"code": code.name},
+        )
     slot = call.data.get(ATTR_COMMAND) or code.primary_slot()
     variants = code.commands.get(slot) if slot else None
     if not slot or not variants:

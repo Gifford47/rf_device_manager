@@ -543,6 +543,12 @@
     },
     "invalid_rf_data": {
       "message": "Ungültige RF-Daten: {error}"
+    },
+    "code_disabled": {
+      "message": "RF-Code „{code}“ ist deaktiviert."
+    },
+    "device_disabled": {
+      "message": "RF-Gerät „{device}“ ist deaktiviert."
     }
   }
 }
