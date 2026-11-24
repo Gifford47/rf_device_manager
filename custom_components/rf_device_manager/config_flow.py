@@ -548,6 +548,9 @@ class RFDeviceManagerConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             options, errors = _validate_device_input(self.hass, user_input)
             if not errors:
+                # The reconfigure form has no "enabled" field; keep the
+                # current state instead of re-enabling a disabled device.
+                options[CONF_ENABLED] = entry.options.get(CONF_ENABLED, True)
                 return self.async_update_reload_and_abort(
                     entry, title=options[CONF_NAME], options=options
                 )

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import SOURCE_RECONFIGURE, ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
@@ -19,6 +19,8 @@ from custom_components.rf_device_manager.config_flow import (
     _HAS_CONDITIONAL_FORM_FIELDS,
 )
 from custom_components.rf_device_manager.const import (
+    CONF_DEFAULT_REPEAT,
+    CONF_ENABLED,
     CONF_ROTATION_RESET,
     DOMAIN,
 )
@@ -29,6 +31,7 @@ from .conftest import (
     DEVICE_ID,
     GIOLA_SPEED_1,
     TRANSMITTER,
+    device_options,
     p8_timings,
     receive,
     sent_hex,
@@ -280,6 +283,37 @@ async def _bulk_flow(hass: HomeAssistant, entry) -> None:
     assert "Speed 1" in result["description_placeholders"]["test_note"]
     result = await _menu(hass, result["flow_id"], "slot_accept")
     assert result["step_id"] == "bulk_done"
+
+
+async def test_reconfigure_keeps_a_disabled_device_disabled(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """The reconfigure form has no "enabled" field and must not re-enable."""
+    entry = await setup_device(
+        hass, hass_storage, {}, options=device_options(enabled=False)
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+    )
+    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "name": "Fan remote",
+            "transmitter": TRANSMITTER,
+            "frequency_preset": "433920000",
+            "default_repeat": 5,
+        },
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_ENABLED] is False
+    assert entry.options[CONF_DEFAULT_REPEAT] == 5
+    device = get_domain_data(hass).store.async_get_device(DEVICE_ID)
+    assert device is not None and device.enabled is False
 
 
 async def test_device_settings_round_trip_rotation_option(
