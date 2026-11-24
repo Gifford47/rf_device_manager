@@ -31,6 +31,8 @@ from .conftest import (
     DEVICE_ID,
     GIOLA_SPEED_1,
     TRANSMITTER,
+    code_dict,
+    command_dict,
     device_options,
     p8_timings,
     receive,
@@ -285,6 +287,33 @@ async def _bulk_flow(hass: HomeAssistant, entry) -> None:
     assert result["step_id"] == "bulk_done"
 
 
+def _switch_code(**settings: Any) -> dict[str, Any]:
+    """A learned switch with on/off commands (repeat 3 unless overridden)."""
+    repeat = settings.get("repeat", 3)
+    return {
+        "power": code_dict(
+            "power",
+            "Power",
+            "switch",
+            {
+                "on": [command_dict(p8_timings("0x0F0F0F"), repeat=repeat)],
+                "off": [command_dict(p8_timings("0xF0F0F0"), repeat=repeat)],
+            },
+            settings={"repeat": repeat, **settings},
+        )
+    }
+
+
+async def _open_code_menu(hass: HomeAssistant, entry) -> ConfigFlowResult:
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _menu(hass, result["flow_id"], "manage_codes")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"code": "power"}
+    )
+    assert result["step_id"] == "code_menu"
+    return result
+
+
 async def test_reconfigure_keeps_a_disabled_device_disabled(
     hass: HomeAssistant, hass_storage, transmitter, sent
 ) -> None:
@@ -314,6 +343,50 @@ async def test_reconfigure_keeps_a_disabled_device_disabled(
     assert entry.options[CONF_DEFAULT_REPEAT] == 5
     device = get_domain_data(hass).store.async_get_device(DEVICE_ID)
     assert device is not None and device.enabled is False
+
+
+async def test_relearn_timeout_offers_skip_and_keeps_the_command(
+    hass: HomeAssistant, hass_storage, transmitter, sent
+) -> None:
+    """Re-learning a configured slot can be skipped after nothing was received."""
+    entry = await setup_device(hass, hass_storage, _switch_code())
+    rf_manager = get_domain_data(hass).rf_manager
+    stored = get_domain_data(hass).store.async_get_code("power")
+    assert stored is not None
+    before = [command.to_dict() for command in stored.commands["on"]]
+
+    def _short_session(timeout: float = 5.0) -> LearnSession:
+        return LearnSession(hub=rf_manager.hub, timeout=0.1, collect_window=0.1)
+
+    with (
+        patch.object(rf_manager.hub, "async_discover", AsyncMock(return_value=None)),
+        patch.object(
+            rf_manager.hub, "async_receiver_names", return_value=["Test receiver"]
+        ),
+        patch.object(rf_manager, "new_learn_session", side_effect=_short_session),
+    ):
+        result = await _open_code_menu(hass, entry)
+        result = await _menu(hass, result["flow_id"], "code_relearn")
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {"slot": "on"}
+        )
+        result = await _menu(hass, result["flow_id"], "slot_learn")
+        assert result["type"] is FlowResultType.SHOW_PROGRESS
+        await asyncio.sleep(0.3)
+        await hass.async_block_till_done()
+        result = await hass.config_entries.options.async_configure(result["flow_id"])
+        if result["type"] is FlowResultType.SHOW_PROGRESS_DONE:
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"]
+            )
+
+    assert result["step_id"] == "slot_learn_failed"
+    assert "slot_skip" in result["menu_options"]
+    result = await _menu(hass, result["flow_id"], "slot_skip")
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    code = get_domain_data(hass).store.async_get_code("power")
+    assert code is not None
+    assert [command.to_dict() for command in code.commands["on"]] == before
 
 
 async def test_device_settings_round_trip_rotation_option(

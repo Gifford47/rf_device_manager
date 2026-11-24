@@ -1091,7 +1091,9 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         assert self._code is not None
         spec = self._slots[self._slot_index]
         menu = ["slot_learn", "slot_manual"]
-        if not spec.required or self._bulk_active:
+        # Same rule as slot_menu: an already configured slot (re-learning)
+        # can be skipped, keeping its current command.
+        if not spec.required or spec.key in self._code.commands or self._bulk_active:
             menu.append("slot_skip")
         return self.async_show_menu(
             step_id="slot_learn_failed",
