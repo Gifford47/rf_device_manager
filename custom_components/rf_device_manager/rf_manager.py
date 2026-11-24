@@ -19,7 +19,7 @@ additional, hardware-agnostic capture source.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import partial
@@ -36,6 +36,7 @@ from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from rf_protocols import ModulationType, RadioFrequencyCommand
 
 from . import rf_analysis
@@ -51,6 +52,9 @@ from .const import (
     MIN_SIGNAL_PULSES,
     RADIO_FREQUENCY_DOMAIN,
     RECEIVER_MAINTENANCE_INTERVAL,
+    ROTATION_SAVE_DELAY,
+    ROTATION_STORAGE_KEY,
+    ROTATION_STORAGE_VERSION,
 )
 from .models import CapturedSignal, RFCommandData
 
@@ -1076,6 +1080,10 @@ class RFManager:
         self.hub = ReceiverHub(hass)
         self.matcher = CodeMatcher(self.hub)
         self._variant_rotation = CommandRotation()
+        self._rotation_store: Store[dict[str, Any]] | None = None
+        self._rotation_group_resolver: (
+            Callable[[str], Iterable[str] | None] | None
+        ) = None
 
     async def async_send(
         self,
@@ -1140,6 +1148,70 @@ class RFManager:
             )
         await rf_async_send_command(self._hass, transmitter, rf_command)
 
+    # ------------------------------------------------------------------
+    # Command-variant rotation
+    # ------------------------------------------------------------------
+
+    async def async_load_rotation(self) -> None:
+        """Load the persisted rotation state (call once after construction).
+
+        Rotation state lives in its own small store
+        (``.storage/rf_device_manager_rotation``) because it changes on every
+        send; rewriting the large code store each time would be wasteful.
+        """
+        if self._rotation_store is None:
+            self._rotation_store = Store(
+                self._hass, ROTATION_STORAGE_VERSION, ROTATION_STORAGE_KEY
+            )
+        data = await self._rotation_store.async_load()
+        self._variant_rotation.load((data or {}).get("next"))
+
+    @callback
+    def set_rotation_group_resolver(
+        self, resolver: Callable[[str], Iterable[str] | None] | None
+    ) -> None:
+        """Set how to find the sibling codes whose rotation a press resets.
+
+        The resolver gets a code id and returns the ids of all codes of the
+        same device when that device has "reset rotation on other button"
+        enabled, else ``None``.
+        """
+        self._rotation_group_resolver = resolver
+
+    @callback
+    def _rotation_data(self) -> dict[str, Any]:
+        """Return the rotation state to persist."""
+        return {"next": self._variant_rotation.to_dict()}
+
+    @callback
+    def _async_schedule_rotation_save(self) -> None:
+        """Persist rotation state soon (debounced; flushed on HA shutdown)."""
+        if self._rotation_store is not None:
+            self._rotation_store.async_delay_save(
+                self._rotation_data, ROTATION_SAVE_DELAY
+            )
+
+    @callback
+    def _async_reset_sibling_rotation(self, code_id: str, slot: str) -> bool:
+        """Restart the sequences of the device's other commands, if enabled.
+
+        Returns whether any rotation state changed.
+        """
+        if self._rotation_group_resolver is None:
+            return False
+        code_ids = self._rotation_group_resolver(code_id)
+        if code_ids is None:
+            return False
+        changed = self._variant_rotation.reset_others(code_ids, code_id, slot)
+        if changed:
+            _LOGGER.debug(
+                "Reset command-variant rotation of the other commands of the "
+                "device of code %s (activity on slot %s)",
+                code_id,
+                slot,
+            )
+        return changed
+
     async def async_send_variants(
         self,
         variants: list[RFCommandData],
@@ -1150,7 +1222,7 @@ class RFManager:
         context: str,
         repeat: int | None = None,
     ) -> None:
-        """Send the next command variant and advance its in-memory rotation."""
+        """Send the next command variant and advance its persisted rotation."""
         if not variants:
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="empty_command"
@@ -1158,6 +1230,9 @@ class RFManager:
         # Advance before awaiting transmission so concurrent sends reserve
         # different variants rather than racing on the same current index.
         index = self._variant_rotation.next_index(code_id, slot, len(variants))
+        siblings_reset = self._async_reset_sibling_rotation(code_id, slot)
+        if len(variants) > 1 or siblings_reset:
+            self._async_schedule_rotation_save()
         command = variants[index]
         log_context = (
             f"{context}, slot {slot}, variant {index + 1}/{len(variants)}, "
@@ -1175,16 +1250,26 @@ class RFManager:
         self._variant_rotation.sync_after_receive(
             code_id, slot, variant_index, variant_count
         )
+        siblings_reset = self._async_reset_sibling_rotation(code_id, slot)
+        if variant_count > 1 or siblings_reset:
+            self._async_schedule_rotation_save()
+
+    @callback
+    def next_variant_index(self, code_id: str, slot: str, count: int) -> int:
+        """Return the variant index the next send of a command will use."""
+        return self._variant_rotation.peek_index(code_id, slot, count)
 
     @callback
     def reset_command_rotation(self, code_id: str, slot: str) -> None:
         """Reset one command's next variant to the first entry."""
         self._variant_rotation.reset_command(code_id, slot)
+        self._async_schedule_rotation_save()
 
     @callback
     def reset_code_rotation(self, code_id: str) -> None:
         """Remove all rotation state for a deleted RF code."""
         self._variant_rotation.reset_code(code_id)
+        self._async_schedule_rotation_save()
 
     async def async_send_raw(
         self,

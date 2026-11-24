@@ -64,10 +64,29 @@ generic RF device manager.
   versioned and migratable. No YAML files.
 - Translations: **English** and **German**.
 
-When a command has multiple variants, sends rotate through them in their stored order.
-A received command from a physical remote synchronizes the next send to the following
-variant. Rotation state is kept in memory and starts at the first variant after a
-Home Assistant restart; commands with a single variant behave as before.
+### Rotating-code remotes (several codes per button)
+
+Some remotes (many 433 MHz ceiling fans, some RF plugs) send a **different
+code on every press of the same button**, cycling through a fixed set (e.g.
+4 codes). Their receivers may reject a code that equals the previous one, and
+learning only one of the codes means HA misses the other presses.
+
+- **Learning:** press the button several times (e.g. 4×, about one press
+  per second) while the wizard listens. Every distinct code is shown in the
+  order it was first received; all candidates received often enough to be a
+  real press are preselected. Save them together as the command's variants.
+- **Sending:** each send uses the next variant in the stored order, per code
+  and command. The position is **saved** (`.storage/rf_device_manager_rotation`)
+  and survives Home Assistant restarts.
+- **Receiving:** every variant is matched, so each press of the physical
+  remote is recognized. A received press also synchronizes the next send to
+  the variant after the received one.
+- **Optional:** *Restart other buttons' code sequence* (device setting).
+  Some remotes restart a button's code sequence when a different button is
+  pressed. With this enabled, sending or receiving any command of the device
+  resets the rotation of all its other commands to their first variant.
+
+Commands with a single variant behave exactly as before.
 
 ## 📋 Requirements
 
@@ -190,6 +209,10 @@ remote_receiver:
 
 ## 📦 Installation
 
+> **Updating from 1.1.x?** Read the [upgrade notes in the changelog](CHANGELOG.md)
+> first — 1.2.0 migrates the storage format and cannot be downgraded without
+> restoring a backup.
+
 ### HACS (recommended)
 
 1. HACS → three dots (⋮) → **Custom repositories**.
@@ -212,8 +235,9 @@ remote_receiver:
 3. Open **Configure** on the device → *Add new RF code*.
 4. Choose the entity type and set its type-specific options (e.g. fan speed
    count).
-5. Per command: **learn** (press the remote button), pick the signal,
-   **test**, save — or enter the code manually.
+5. Per command: **learn** (press the remote button), pick the signal(s),
+   **test**, save — or enter the code manually. For rotating-code remotes,
+   press the button several times while learning (see above).
 6. The entity appears immediately — no restart, no reload.
 
 **Many buttons at once:** for a multi-button remote, use *Add buttons*
@@ -297,14 +321,26 @@ manual entry are a one-line addition to the `RC_PROTOCOLS` table.
 
 ### Development / tests
 
-The decoder pipeline is testable without a Home Assistant installation:
+The decoder pipeline and the model/rotation logic are testable without a
+Home Assistant installation:
 
 ```bash
 python tests/test_decoders.py
+python tests/test_models.py
+python tests/test_rotation.py
+```
+
+Integration tests (storage migrations, setup, rotation persistence, config
+and options flows) run against a real Home Assistant core:
+
+```bash
+pip install -r requirements_test.txt
+pytest tests/integration
 ```
 
 The same tests run in CI (`.github/workflows/validate.yaml`) alongside
-hassfest and HACS validation.
+hassfest and HACS validation. See [CONTRIBUTING / CLAUDE.md](CLAUDE.md) for
+the rules every pull request has to follow.
 
 ## 🔧 Services
 

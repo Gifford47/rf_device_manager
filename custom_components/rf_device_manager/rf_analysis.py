@@ -254,6 +254,71 @@ def cluster_learn_signals(
 
 
 # ---------------------------------------------------------------------------
+# Decoder revision (re-decoding of stored commands)
+# ---------------------------------------------------------------------------
+
+# Bump this whenever a change to ``decoders.py`` or to the analysis pipeline
+# here (frame splitting, base-unit estimation, fingerprinting) can change the
+# decoded ``bits``/``fingerprint`` of an *existing* capture. On the next start
+# the store re-decodes every stored command from its raw timings, so learned
+# codes keep matching received signals. ``tests/test_decoders.py`` holds
+# golden fingerprints that fail when decoding changes without a bump.
+#
+# 1: initial decoders (up to 1.1.x)
+# 2: RC-Switch P4 2.28 ms sync gap splits frames; P8 bit polarity fixed
+DECODER_REVISION = 2
+
+# Decode results copied into ``RFCommandData.extra`` (learned and manual).
+STORED_DECODE_KEYS = (
+    "encoding",
+    "bits",
+    "bit_count",
+    "hex",
+    "tristate",
+    "protocol_guess",
+    "frame_count",
+)
+
+
+def stored_decode(timings: list[int]) -> tuple[str | None, dict[str, Any], int | None]:
+    """Decode stored timings into ``(fingerprint, extra, base_unit_us)``.
+
+    ``extra`` holds exactly the ``STORED_DECODE_KEYS`` the current decoders
+    produce for these timings (absent keys mean "not decodable").
+    """
+    analysis = analyze(timings)
+    extra = {key: analysis[key] for key in STORED_DECODE_KEYS if key in analysis}
+    return analysis.get("fingerprint"), extra, analysis.get("base_unit_us")
+
+
+# A learned candidate is preselected as a command variant when it was received
+# at least this often, relative to the most frequently received candidate
+# (and at least twice). Real button presses repeat their frame many times;
+# interference and corrupted receptions are typically seen once.
+_PRESELECT_MIN_RATIO = 0.25
+_PRESELECT_MIN_TIMES_SEEN = 2
+
+
+def preselected_signal_indices(analyses: list[dict[str, Any]]) -> list[int]:
+    """Return the indices of learned candidates to preselect as variants.
+
+    Remotes that cycle through several codes per button produce several
+    strong candidates in one learning session; all of them should be stored.
+    One-off captures (noise, neighbouring devices, corrupted frames) stay
+    unselected. The strongest candidate is always selected.
+    """
+    if not analyses:
+        return []
+    counts = [int(analysis.get("times_seen", 1) or 1) for analysis in analyses]
+    strongest = max(counts)
+    threshold = max(_PRESELECT_MIN_TIMES_SEEN, strongest * _PRESELECT_MIN_RATIO)
+    selected = [index for index, count in enumerate(counts) if count >= threshold]
+    if not selected:
+        selected = [counts.index(strongest)]
+    return selected
+
+
+# ---------------------------------------------------------------------------
 # Frame handling
 # ---------------------------------------------------------------------------
 

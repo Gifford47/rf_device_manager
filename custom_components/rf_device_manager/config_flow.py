@@ -76,6 +76,7 @@ from .const import (
     CONF_OPTIONS,
     CONF_PULSE_LENGTH,
     CONF_RC_PROTOCOL,
+    CONF_ROTATION_RESET,
     CONF_REPEAT,
     CONF_SOURCE_ENTRY,
     CONF_SPEED_COUNT,
@@ -345,6 +346,7 @@ def _device_schema() -> vol.Schema:
                     min=0, max=20, step=1, mode=NumberSelectorMode.BOX
                 )
             ),
+            vol.Optional(CONF_ROTATION_RESET, default=False): BooleanSelector(),
         }
     )
 
@@ -386,6 +388,7 @@ def _validate_device_input(
         CONF_TRANSMITTER: transmitter,
         CONF_FREQUENCY: frequency,
         CONF_DEFAULT_REPEAT: int(user_input.get(CONF_DEFAULT_REPEAT, DEFAULT_REPEAT)),
+        CONF_ROTATION_RESET: bool(user_input.get(CONF_ROTATION_RESET, False)),
         CONF_ENABLED: user_input.get(CONF_ENABLED, True),
     }
     if not options[CONF_NAME]:
@@ -419,6 +422,7 @@ def _suggested_from_options(options: dict[str, Any]) -> dict[str, Any]:
         CONF_TRANSMITTER: options.get(CONF_TRANSMITTER, ""),
         CONF_FREQUENCY_PRESET: preset,
         CONF_DEFAULT_REPEAT: options.get(CONF_DEFAULT_REPEAT, DEFAULT_REPEAT),
+        CONF_ROTATION_RESET: bool(options.get(CONF_ROTATION_RESET, False)),
     }
     if custom is not None:
         suggested[CONF_FREQUENCY_CUSTOM] = custom
@@ -1163,7 +1167,15 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             step_id="slot_learn_done",
             data_schema=vol.Schema(
                 {
-                    vol.Required("signals", default=["0"]): SelectSelector(
+                    vol.Required(
+                        "signals",
+                        default=[
+                            str(index)
+                            for index in rf_analysis.preselected_signal_indices(
+                                [signal.analysis for signal in self._signals]
+                            )
+                        ],
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=options,
                             mode=SelectSelectorMode.LIST,
@@ -1187,16 +1199,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
         analysis = signal.analysis
         extra = {
             key: analysis[key]
-            for key in (
-                "encoding",
-                "bits",
-                "bit_count",
-                "hex",
-                "tristate",
-                "protocol_guess",
-                "frame_count",
-                "times_seen",
-            )
+            for key in (*rf_analysis.STORED_DECODE_KEYS, "times_seen")
             if key in analysis
         }
         return RFCommandData(
@@ -1365,15 +1368,7 @@ class RFDeviceManagerOptionsFlow(OptionsFlow):
             analysis = rf_analysis.analyze(timings)
             extra = {
                 key: analysis[key]
-                for key in (
-                    "encoding",
-                    "bits",
-                    "bit_count",
-                    "hex",
-                    "tristate",
-                    "protocol_guess",
-                    "frame_count",
-                )
+                for key in rf_analysis.STORED_DECODE_KEYS
                 if key in analysis
             }
             commands.append(

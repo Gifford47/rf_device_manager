@@ -22,6 +22,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .models import RFCode, RFDeviceConfig
+from .rf_analysis import DECODER_REVISION
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +149,36 @@ class RFDeviceStore:
         _LOGGER.debug(
             "Loaded %d devices and %d codes", len(self.devices), len(self.codes)
         )
+        revision = data.get("decoder_revision", 1)
+        if self.codes and (
+            not isinstance(revision, int) or revision < DECODER_REVISION
+        ):
+            self._redecode_all(revision)
+
+    @callback
+    def _redecode_all(self, old_revision: Any) -> None:
+        """Re-decode every stored command after a decoder change.
+
+        Only fingerprints and decode metadata are refreshed (see
+        ``RFCommandData.redecode``); timings are sent unchanged as before.
+        """
+        changed = 0
+        total = 0
+        for code in self.codes.values():
+            for variants in code.commands.values():
+                for command in variants:
+                    total += 1
+                    if command.redecode():
+                        changed += 1
+        _LOGGER.info(
+            "Decoder revision %s -> %s: re-decoded %d stored commands "
+            "(%d changed)",
+            old_revision,
+            DECODER_REVISION,
+            total,
+            changed,
+        )
+        self.async_schedule_save()
 
     @callback
     def _data_to_save(self) -> dict[str, Any]:
@@ -158,6 +189,7 @@ class RFDeviceStore:
                 for device_id, device in self.devices.items()
             },
             "codes": {code_id: code.to_dict() for code_id, code in self.codes.items()},
+            "decoder_revision": DECODER_REVISION,
         }
 
     @callback

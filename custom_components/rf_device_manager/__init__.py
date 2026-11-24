@@ -27,6 +27,7 @@ from .const import (
     CONF_ENABLED,
     CONF_FREQUENCY,
     CONF_NAME,
+    CONF_ROTATION_RESET,
     CONF_TRANSMITTER,
     DEFAULT_FREQUENCY,
     DEFAULT_REPEAT,
@@ -68,6 +69,9 @@ def _sync_store_from_entry(
         entry.options.get(CONF_DEFAULT_REPEAT, DEFAULT_REPEAT)
     )
     device.enabled = bool(entry.options.get(CONF_ENABLED, True))
+    device.settings[CONF_ROTATION_RESET] = bool(
+        entry.options.get(CONF_ROTATION_RESET, False)
+    )
     store.async_upsert_device(device)
     return device
 

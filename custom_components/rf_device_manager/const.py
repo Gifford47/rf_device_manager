@@ -18,6 +18,12 @@ STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 3
 STORAGE_SAVE_DELAY = 1.0  # seconds, debounce for Store.async_delay_save
 
+# Command-variant rotation state (next variant per code/slot) is persisted in
+# its own small store, because it changes on every send of a rotating code.
+ROTATION_STORAGE_KEY = f"{DOMAIN}_rotation"
+ROTATION_STORAGE_VERSION = 1
+ROTATION_SAVE_DELAY = 5.0  # seconds; HA flushes pending saves on shutdown
+
 # ---------------------------------------------------------------------------
 # Platforms handled by this integration
 # ---------------------------------------------------------------------------
@@ -75,6 +81,10 @@ CONF_FREQUENCY = "frequency"
 CONF_FREQUENCY_PRESET = "frequency_preset"
 CONF_FREQUENCY_CUSTOM = "frequency_custom"
 CONF_DEFAULT_REPEAT = "default_repeat"
+# Restart the code sequence of every other command of the device whenever
+# one command is sent or received (remotes that reset a button's rotation
+# as soon as a different button is pressed).
+CONF_ROTATION_RESET = "rotation_reset_on_other"
 CONF_ENABLED = "enabled"
 CONF_DUPLICATE_FROM = "duplicate_from"
 CONF_SOURCE_ENTRY = "source_entry"

@@ -45,13 +45,27 @@ for name, value in {
     "ENTITY_TYPE_SENSOR": "sensor",
     "ENTITY_TYPE_SWITCH": "switch",
     "PROTOCOL_RAW": "raw",
+    # Pure constants needed by the real decoders/rf_analysis modules.
+    "IDLE_TRIM_US": 20_000,
+    "MIN_SIGNAL_PULSES": 8,
+    "PROTOCOL_B0": "b0",
+    "PROTOCOL_BINARY": "binary",
+    "PROTOCOL_PRONTO": "pronto",
+    "PROTOCOL_TRISTATE": "tristate",
 }.items():
     setattr(const, name, value)
 sys.modules["rfdm.const"] = const
 
-decoders = types.ModuleType("rfdm.decoders")
-decoders.encoding_label = lambda value: value
-sys.modules["rfdm.decoders"] = decoders
+# models imports the real (pure-Python) decoders and rf_analysis modules.
+for _name in ("decoders", "rf_analysis"):
+    _spec = importlib.util.spec_from_file_location(
+        f"rfdm.{_name}", COMPONENT / f"{_name}.py"
+    )
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules[f"rfdm.{_name}"] = _module
+    assert _spec.loader is not None
+    _spec.loader.exec_module(_module)
+rf_analysis = sys.modules["rfdm.rf_analysis"]
 
 spec = importlib.util.spec_from_file_location(
     "rfdm.models", COMPONENT / "models.py"

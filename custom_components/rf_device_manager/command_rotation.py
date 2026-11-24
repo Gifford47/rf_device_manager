@@ -1,13 +1,26 @@
-"""In-memory rotation state for ordered RF command variants."""
+"""Rotation state for ordered RF command variants.
+
+Pure Python (no Home Assistant imports) so it stays testable standalone.
+``RFManager`` owns one instance, persists it through a small HA ``Store``
+(see ``to_dict``/``load``) and resolves device grouping for
+``reset_others``.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import Any
+
 
 class CommandRotation:
-    """Track the next variant independently for each RF code command."""
+    """Track the next variant independently for each RF code command.
+
+    The state maps ``(code_id, slot)`` to the index of the variant that the
+    next transmission will use. A missing key means "start at variant 0".
+    """
 
     def __init__(self) -> None:
-        """Initialize an empty, non-persistent rotation table."""
+        """Initialize an empty rotation table."""
         self._next_indices: dict[tuple[str, str], int] = {}
 
     def next_index(self, code_id: str, slot: str, count: int) -> int:
@@ -19,6 +32,12 @@ class CommandRotation:
         index = self._next_indices.get(key, 0) % count
         self._next_indices[key] = (index + 1) % count
         return index
+
+    def peek_index(self, code_id: str, slot: str, count: int) -> int:
+        """Return the index the next send would use, without advancing."""
+        if count <= 1:
+            return 0
+        return self._next_indices.get((code_id, slot), 0) % count
 
     def sync_after_receive(
         self, code_id: str, slot: str, received_index: int, count: int
@@ -38,3 +57,49 @@ class CommandRotation:
         """Discard all command rotation state for one RF code."""
         for key in [key for key in self._next_indices if key[0] == code_id]:
             self._next_indices.pop(key, None)
+
+    def reset_others(
+        self, code_ids: Iterable[str], keep_code_id: str, keep_slot: str
+    ) -> bool:
+        """Reset every command of ``code_ids`` except ``(keep_code_id, keep_slot)``.
+
+        Mirrors remotes that restart a button's code sequence as soon as a
+        different button is pressed. Returns whether any state changed.
+        """
+        group = set(code_ids)
+        keep = (keep_code_id, keep_slot)
+        stale = [
+            key for key in self._next_indices if key[0] in group and key != keep
+        ]
+        for key in stale:
+            self._next_indices.pop(key, None)
+        return bool(stale)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, dict[str, int]]:
+        """Serialize as ``{code_id: {slot: next_index}}`` (JSON-safe)."""
+        data: dict[str, dict[str, int]] = {}
+        for (code_id, slot), index in sorted(self._next_indices.items()):
+            if index:
+                data.setdefault(code_id, {})[slot] = index
+        return data
+
+    def load(self, data: Any) -> None:
+        """Replace the state from ``to_dict`` output, ignoring malformed parts."""
+        self._next_indices.clear()
+        if not isinstance(data, dict):
+            return
+        for code_id, slots in data.items():
+            if not isinstance(code_id, str) or not isinstance(slots, dict):
+                continue
+            for slot, index in slots.items():
+                if (
+                    isinstance(slot, str)
+                    and isinstance(index, int)
+                    and not isinstance(index, bool)
+                    and index > 0
+                ):
+                    self._next_indices[(code_id, slot)] = index

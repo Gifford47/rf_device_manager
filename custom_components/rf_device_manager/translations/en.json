@@ -18,14 +18,16 @@
           "transmitter": "RF transmitter",
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
-          "default_repeat": "Default repeats"
+          "default_repeat": "Default repeats",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
         },
         "data_description": {
           "name": "Shown as the device name in Home Assistant.",
           "transmitter": "The radio_frequency entity (e.g. an ESPHome IR/RF proxy) used to send codes for this device.",
           "frequency_preset": "Carrier frequency of the device's remote control.",
           "frequency_custom": "Only used when 'Custom frequency…' is selected above.",
-          "default_repeat": "How many extra times commands are repeated when sending. 0 sends once; 7 (default) matches a short button press."
+          "default_repeat": "How many extra times commands are repeated when sending. 0 sends once; 7 (default) matches a short button press.",
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       },
       "duplicate_device": {
@@ -44,7 +46,11 @@
           "transmitter": "RF transmitter",
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
-          "default_repeat": "Default repeats"
+          "default_repeat": "Default repeats",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       }
     },
@@ -82,7 +88,11 @@
           "frequency_preset": "Frequency",
           "frequency_custom": "Custom frequency (Hz)",
           "default_repeat": "Default repeats",
-          "enabled": "Device enabled"
+          "enabled": "Device enabled",
+          "rotation_reset_on_other": "Restart other buttons' code sequence"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Only for remotes whose buttons cycle through several codes: whenever one button is sent or received, every other button of this device starts again at its first learned code variant. Enable this if your physical remote behaves this way (e.g. some ceiling fans)."
         }
       },
       "add_code": {
@@ -159,7 +169,7 @@
       },
       "slot_learn_done": {
         "title": "Select signals",
-        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe most frequently received candidates are kept to filter out noise, then displayed in the order in which they were first received. The ×N count shows how often each candidate was received. Select every signal that belongs to this button; their displayed order becomes the send order.",
+        "description": "Several different signals were received for **{slot}**:\n\n{signals}\n\nThe most frequently received candidates are kept to filter out noise, then displayed in the order in which they were first received. The ×N count shows how often each candidate was received. Signals received often enough to be a real button press are preselected; untick any that do not belong to this button. The displayed order becomes the send order.",
         "data": {
           "signals": "Signals to save"
         }

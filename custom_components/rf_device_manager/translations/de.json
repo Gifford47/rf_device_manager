@@ -18,14 +18,16 @@
           "transmitter": "RF-Sender",
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
-          "default_repeat": "Standard-Wiederholungen"
+          "default_repeat": "Standard-Wiederholungen",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
         },
         "data_description": {
           "name": "Wird als Gerätename in Home Assistant angezeigt.",
           "transmitter": "Die radio_frequency-Entität (z. B. ein ESPHome IR/RF-Proxy), über die Codes dieses Geräts gesendet werden.",
           "frequency_preset": "Trägerfrequenz der Fernbedienung des Geräts.",
           "frequency_custom": "Wird nur verwendet, wenn oben 'Eigene Frequenz…' gewählt ist.",
-          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden. 0 sendet einmal; 7 (Standard) entspricht einem kurzen Tastendruck."
+          "default_repeat": "Wie oft Befehle beim Senden zusätzlich wiederholt werden. 0 sendet einmal; 7 (Standard) entspricht einem kurzen Tastendruck.",
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       },
       "duplicate_device": {
@@ -44,7 +46,11 @@
           "transmitter": "RF-Sender",
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
-          "default_repeat": "Standard-Wiederholungen"
+          "default_repeat": "Standard-Wiederholungen",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       }
     },
@@ -82,7 +88,11 @@
           "frequency_preset": "Frequenz",
           "frequency_custom": "Eigene Frequenz (Hz)",
           "default_repeat": "Standard-Wiederholungen",
-          "enabled": "Gerät aktiviert"
+          "enabled": "Gerät aktiviert",
+          "rotation_reset_on_other": "Codefolge anderer Tasten neu starten"
+        },
+        "data_description": {
+          "rotation_reset_on_other": "Nur für Fernbedienungen, deren Tasten mehrere Codes durchlaufen: Sobald eine Taste gesendet oder empfangen wird, beginnen alle anderen Tasten dieses Geräts wieder bei ihrer ersten gelernten Codevariante. Aktivieren, wenn sich deine Fernbedienung so verhält (z. B. manche Deckenventilatoren)."
         }
       },
       "add_code": {
@@ -159,7 +169,7 @@
       },
       "slot_learn_done": {
         "title": "Signale auswählen",
-        "description": "Für **{slot}** wurden mehrere unterschiedliche Signale empfangen:\n\n{signals}\n\nDie am häufigsten empfangenen Kandidaten werden beibehalten, um Störungen auszusortieren, und anschließend in der Reihenfolge ihres ersten Empfangs angezeigt. Die Häufigkeit (×N) zeigt, wie oft jedes Signal empfangen wurde. Wähle alle Signale aus, die zu dieser Taste gehören; ihre angezeigte Reihenfolge wird später zum Senden verwendet.",
+        "description": "Für **{slot}** wurden mehrere unterschiedliche Signale empfangen:\n\n{signals}\n\nDie am häufigsten empfangenen Kandidaten werden beibehalten, um Störungen auszusortieren, und anschließend in der Reihenfolge ihres ersten Empfangs angezeigt. Die Häufigkeit (×N) zeigt, wie oft jedes Signal empfangen wurde. Signale, die oft genug für einen echten Tastendruck empfangen wurden, sind vorausgewählt; entferne den Haken bei allen, die nicht zu dieser Taste gehören. Die angezeigte Reihenfolge wird zum Senden verwendet.",
         "data": {
           "signals": "Zu speichernde Signale"
         }

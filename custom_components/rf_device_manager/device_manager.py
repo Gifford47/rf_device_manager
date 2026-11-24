@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,6 +20,7 @@ from homeassistant.helpers.device_registry import DeviceEntry, DeviceInfo
 from homeassistant.util import slugify
 
 from .const import (
+    CONF_ROTATION_RESET,
     CONF_DUPLICATE_FROM,
     DOMAIN,
     EVENT_CODE_LEARNED,
@@ -70,13 +72,35 @@ async def async_get_or_create_domain_data(hass: HomeAssistant) -> RFDomainData:
 
         store = RFDeviceStore(hass)
         await store.async_load()
+        rf_manager = RFManager(hass)
+        await rf_manager.async_load_rotation()
+        rf_manager.set_rotation_group_resolver(
+            partial(_rotation_reset_group, store)
+        )
         data = RFDomainData(
             store=store,
-            rf_manager=RFManager(hass),
+            rf_manager=rf_manager,
             device_manager=RFDeviceManager(hass, store),
         )
         hass.data[DOMAIN] = data
         return data
+
+
+def _rotation_reset_group(store: RFDeviceStore, code_id: str) -> list[str] | None:
+    """Return all code ids of a code's device if it resets rotation on other buttons.
+
+    Used by ``RFManager`` when a command is sent or received: for devices with
+    ``CONF_ROTATION_RESET`` enabled, every other command of the device
+    restarts its variant sequence (like remotes that reset a button's code
+    rotation when a different button is pressed).
+    """
+    code = store.async_get_code(code_id)
+    if code is None:
+        return None
+    device = store.async_get_device(code.device_id)
+    if device is None or not device.settings.get(CONF_ROTATION_RESET, False):
+        return None
+    return list(store.async_codes_for_device(device.id))
 
 
 class RFDeviceManager:

@@ -43,6 +43,7 @@ from .const import (
     ENTITY_TYPE_SWITCH,
     PROTOCOL_RAW,
 )
+from . import rf_analysis
 from .decoders import encoding_label
 
 # ---------------------------------------------------------------------------
@@ -242,6 +243,38 @@ class RFCommandData:
             fingerprint=data.get("fingerprint"),
             extra=dict(data.get("extra", {})),
         )
+
+    def redecode(self) -> bool:
+        """Refresh fingerprint and decode metadata from the stored timings.
+
+        Called by the store when ``rf_analysis.DECODER_REVISION`` increased,
+        so commands learned with older decoders keep matching received
+        signals. The timings themselves are never touched. Returns whether
+        anything changed.
+        """
+        if not self.data:
+            return False
+        fingerprint, extra, base_unit = rf_analysis.stored_decode(self.data)
+        new_extra = {
+            key: value
+            for key, value in self.extra.items()
+            if key not in rf_analysis.STORED_DECODE_KEYS
+        }
+        new_extra.update(extra)
+        new_pulse_length = self.pulse_length
+        if self.protocol == PROTOCOL_RAW and base_unit:
+            # For raw commands the pulse length is the estimated base unit;
+            # encoded manual input (binary/tri-state) keeps the entered value.
+            new_pulse_length = base_unit
+        changed = (
+            fingerprint != self.fingerprint
+            or new_extra != self.extra
+            or new_pulse_length != self.pulse_length
+        )
+        self.fingerprint = fingerprint
+        self.extra = new_extra
+        self.pulse_length = new_pulse_length
+        return changed
 
     def protocol_summary(self) -> str:
         """Return a short protocol summary for entity attributes.
